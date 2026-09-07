@@ -1,0 +1,18 @@
+# python
+backend/.venv/
+__pycache__/
+*.pyc
+
+# secrets - NEVER commit
+secrets/
+.env
+*.json.key
+token.json
+
+# os
+.DS_Store
+~$*
+
+labels.json
+node_modules/
+dist/
