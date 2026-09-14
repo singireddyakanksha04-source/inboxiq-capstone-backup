@@ -79,7 +79,11 @@ def get_email(uid: str, message_id: str) -> dict | None:
 
 def list_emails(uid: str, limit: int = 20, category: str | None = None) -> list[dict]:
     q = _emails(uid)
-    if category:
+    if category == "uncategorized":
+        # count_by_category's synthetic bucket for category is None/missing —
+        # never a real stored value, so it needs its own filter.
+        q = q.where(filter=firestore.FieldFilter("category", "==", None))
+    elif category:
         q = q.where(filter=firestore.FieldFilter("category", "==", category))
     q = q.order_by("date", direction=firestore.Query.DESCENDING).limit(limit)
     return [d.to_dict() for d in q.stream()]
@@ -90,6 +94,44 @@ def set_category(uid: str, message_id: str, category: str, confidence: float) ->
     _emails(uid).document(message_id).set(
         {"category": category, "confidence": confidence}, merge=True
     )
+
+
+def set_promo_subcategory(uid: str, message_id: str, subcategory: str | None) -> None:
+    """Hook for Satwik's extract_promo_subcategory."""
+    _emails(uid).document(message_id).set({"promo_subcategory": subcategory}, merge=True)
+
+
+def set_subscription_info(uid: str, message_id: str, info: dict) -> None:
+    """Hook for Satwik's extract_subscription_info."""
+    _emails(uid).document(message_id).set(info, merge=True)
+
+
+def list_subscriptions(uid: str) -> list[dict]:
+    return list_emails(uid, limit=200, category="subscription")
+
+
+_AMOUNT_RE = re.compile(r"\$\s?(\d+(?:\.\d{2})?)")
+
+
+def estimate_monthly_cost(subscriptions: list[dict]) -> float:
+    """Trials cost nothing until charged, so only monthly/yearly entries with
+    a parsed dollar amount count toward the estimate; yearly is normalized to
+    its monthly-equivalent."""
+    total = 0.0
+    for sub in subscriptions:
+        amount = sub.get("sub_amount")
+        if not amount:
+            continue
+        match = _AMOUNT_RE.search(amount)
+        if not match:
+            continue
+        value = float(match.group(1))
+        if sub.get("sub_cycle") == "yearly":
+            value /= 12
+        elif sub.get("sub_cycle") == "trial":
+            continue
+        total += value
+    return round(total, 2)
 
 
 def count_by_category(uid: str) -> dict[str, int]:

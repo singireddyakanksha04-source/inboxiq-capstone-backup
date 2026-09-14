@@ -17,6 +17,12 @@ def stats(uid: str):
     return {"by_category": fs.count_by_category(uid)}
 
 
+@router.get("/subscriptions")
+def subscriptions(uid: str):
+    subs = fs.list_subscriptions(uid)
+    return {"items": subs, "estimated_monthly_cost": fs.estimate_monthly_cost(subs)}
+
+
 @router.get("/{message_id}")
 def get_email(uid: str, message_id: str):
     doc = fs.get_email(uid, message_id)

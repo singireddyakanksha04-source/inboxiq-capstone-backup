@@ -27,3 +27,12 @@ class EmailMessage(BaseModel):
     # filled in later by the classifier (Satwik)
     category: str | None = None
     confidence: float | None = None
+
+    # filled in for category == "subscription" by extract_subscription_info
+    sub_service: str | None = None
+    sub_amount: str | None = None
+    sub_cycle: str | None = None          # monthly | yearly | trial
+    sub_renewal_hint: str | None = None   # raw text near the renewal date, not parsed
+
+    # filled in for category == "promotion" by extract_promo_subcategory
+    promo_subcategory: str | None = None
