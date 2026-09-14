@@ -86,7 +86,7 @@ def authorization_url(account: str = "default") -> str:
 
     url, state = flow.authorization_url(
         access_type="offline",  # we want a refresh token, not just an hour of access
-        prompt="consent",
+        prompt="select_account consent",  # force the chooser instead of auto-picking the last session
     )
     _pending[state] = account
     return url
