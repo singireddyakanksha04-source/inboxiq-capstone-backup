@@ -27,6 +27,8 @@ CATEGORIES = [
     "shipping",
     "otp",
     "subscription",
+    "alert",
+    "security",
     "personal",
     "other",
 ]
@@ -49,14 +51,32 @@ class Classifier(Protocol):
 # --------------------------------------------------------------- rules baseline
 
 _RULES: list[tuple[str, str]] = [
-    ("otp", r"\b(one[- ]time (pass)?code|verification code|otp|\b\d{6}\b is your)\b"),
+    ("otp", r"\b(one[- ]time (pass)?code|verification code|temporary (access )?code|otp|\b\d{6}\b is your)\b"),
+    (
+        "security",
+        r"\b(new device|new sign-?in|signed in (to|from)|verify it'?s you|"
+        r"security alert|suspicious (login|activity)|shared (your|some).*data|"
+        r"account access|someone (used|is using) your)\b",
+    ),
     ("shipping", r"\b(shipped|out for delivery|tracking number|arriving|delivered)\b"),
     ("receipt", r"\b(receipt|order confirm|your order|thanks for your (order|purchase)|invoice paid)\b"),
     ("bill", r"\b(payment due|amount due|statement is ready|autopay|past due|invoice)\b"),
     ("subscription", r"\b(renew(s|al|ed)?|free trial|billing cycle|membership|plan will)\b"),
+    (
+        "alert",
+        r"\b(new listing|price drop|saved search|search alert|top match|"
+        r"job match(es)?|new job(s)? for you|now hiring|recommended for you|"
+        r"based on your (recent )?(activity|search))\b",
+    ),
     ("promotion", r"(\b\d{1,2}% off\b|sale ends|limited time|deal|coupon|promo code|shop now|save big)"),
     ("newsletter", r"\b(newsletter|this week in|digest|unsubscribe from our list|issue #)\b"),
 ]
+
+# Sender domains that are reliably one category regardless of body wording —
+# listing/monitoring platforms don't always say "alert" in the email itself,
+# and newsletter senders don't always say "newsletter".
+_ALERT_DOMAINS = ("realtor.com", "cars.com", "carfax.com", "imotors.com", "ziprecruiter.com", "remotehunter.com")
+_NEWSLETTER_DOMAINS = ("beehiiv.com", "substack.com", "convertkit.com")
 
 
 class RuleClassifier:
@@ -67,8 +87,6 @@ class RuleClassifier:
 
     def classify(self, email: EmailMessage) -> tuple[str, float]:
         # Gmail's own category labels are strong evidence when present.
-        if "CATEGORY_PROMOTIONS" in email.labels:
-            return "promotion", 0.6
         if "CATEGORY_PERSONAL" in email.labels:
             return "personal", 0.5
 
@@ -76,6 +94,15 @@ class RuleClassifier:
         for category, pattern in _RULES:
             if re.search(pattern, blob):
                 return category, 0.7
+
+        domain = email.sender_domain.lower()
+        if any(domain.endswith(d) for d in _ALERT_DOMAINS):
+            return "alert", 0.55
+        if any(domain.endswith(d) for d in _NEWSLETTER_DOMAINS):
+            return "newsletter", 0.55
+        if "CATEGORY_PROMOTIONS" in email.labels:
+            return "promotion", 0.6
+
         return "other", 0.3
 
 
@@ -145,6 +172,78 @@ class GroqClassifier:
         except (TypeError, ValueError):
             confidence = 0.0
         return category, max(0.0, min(1.0, confidence))
+
+
+# ------------------------------------------------ promotion subcategories
+
+_PROMO_SUBCATS: list[tuple[str, str]] = [
+    ("travel", r"\b(flight|hotel|resort|vacation|booking\.com|airbnb|itinerary|airfare)\b"),
+    ("food", r"\b(restaurant|delivery|doordash|uber eats|grubhub|recipe|menu|dining)\b"),
+    ("groceries", r"\b(grocery|groceries|instacart|supermarket|produce)\b"),
+    ("electronics", r"\b(laptop|phone|electronics|headphones|tv|gadget|charger)\b"),
+    ("clothing", r"\b(clothing|apparel|shoes|dress|sneakers|fashion|wardrobe)\b"),
+    ("entertainment", r"\b(movie|concert|streaming|tickets|show|game pass|subscription box)\b"),
+    ("finance", r"\b(credit card|loan|apr|cashback|invest(ment)?|bank(ing)?)\b"),
+    ("shopping", r"\b(shop now|sale|deal|coupon|promo code|discount|% off)\b"),
+]
+
+
+def extract_promo_subcategory(email: EmailMessage) -> str | None:
+    """Second-pass, rules-based split of the broad 'promotion' bucket into the
+    finer categories the proposal asks for, so users don't have to open every
+    promo email to tell a travel deal from a clothing sale."""
+    blob = f"{email.subject}\n{email.snippet}\n{email.body_text[:2000]}".lower()
+    for subcat, pattern in _PROMO_SUBCATS:
+        if re.search(pattern, blob):
+            return subcat
+    return None
+
+
+# --------------------------------------------------- subscription extraction
+
+_AMOUNT_RE = re.compile(r"\$\s?\d+(?:\.\d{2})?")
+_CYCLE_RE = re.compile(r"\b(monthly|annual(?:ly)?|yearly|per month|per year|free trial)\b", re.I)
+_RENEWAL_RE = re.compile(
+    r"(renews?\s+on|next billing date|renewal date|your trial ends|billed on)\s*[:\-]?\s*(.{0,30})",
+    re.I,
+)
+
+_STOPWORDS = {"the", "team", "inc", "no-reply", "noreply", "support", "billing"}
+
+
+def _guess_service_name(email: EmailMessage) -> str:
+    name = email.sender.split("<")[0].strip().strip('"')
+    if name and name.lower() not in _STOPWORDS:
+        return name
+    return email.sender_domain.split(".")[0].capitalize()
+
+
+def extract_subscription_info(email: EmailMessage) -> dict:
+    """Rules-based pull of service/amount/cycle/renewal hint from a
+    category == 'subscription' email. No LLM call — same free-baseline
+    philosophy as RuleClassifier."""
+    blob = f"{email.subject}\n{email.snippet}\n{email.body_text[:2000]}"
+
+    amount_match = _AMOUNT_RE.search(blob)
+    cycle_match = _CYCLE_RE.search(blob)
+    renewal_match = _RENEWAL_RE.search(blob)
+
+    cycle = None
+    if cycle_match:
+        raw = cycle_match.group(1).lower()
+        if "trial" in raw:
+            cycle = "trial"
+        elif "year" in raw or "annual" in raw:
+            cycle = "yearly"
+        else:
+            cycle = "monthly"
+
+    return {
+        "sub_service": _guess_service_name(email),
+        "sub_amount": amount_match.group(0) if amount_match else None,
+        "sub_cycle": cycle,
+        "sub_renewal_hint": renewal_match.group(2).strip() if renewal_match else None,
+    }
 
 
 def get_classifier(backend: str = "rules") -> Classifier:
