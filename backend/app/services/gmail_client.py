@@ -42,7 +42,24 @@ def _extract_body(payload: dict) -> str:
 
     walk(payload)
     text = "\n".join(plain) or "\n".join(html)
-    return re.sub(r"[ \t]*\n[ \t]*", "\n", text).strip()
+    return _clean_body_text(text)
+
+
+_ZERO_WIDTH = re.compile(r"[​‌‍﻿͏]")
+_TRACKING_LINK = re.compile(r"\(\s?https?://\S+?\s?\)")
+
+
+def _clean_body_text(text: str) -> str:
+    """Marketing HTML decodes into a lot of noise that hides the signal
+    classify/subscription-extraction actually needs: zero-width tracking
+    characters, inline tracking-link parens, and runs of blank lines left
+    over from stripped table cells."""
+    text = _ZERO_WIDTH.sub("", text)
+    text = _TRACKING_LINK.sub("", text)
+    text = re.sub(r"\r\n?", "\n", text)
+    text = re.sub(r"[ \t]*\n[ \t]*", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def parse_message(raw: dict) -> EmailMessage:
