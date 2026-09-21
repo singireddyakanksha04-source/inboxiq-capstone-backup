@@ -4,14 +4,21 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import RedirectResponse
 
 from app.core.config import get_settings
+from app.services import firestore_client as fs
 from app.services import gmail_auth
+from app.services.gmail_client import get_profile
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 @router.get("/status")
 def status(account: str = "default"):
-    return {"account": account, "authorized": gmail_auth.is_authorized(account)}
+    """Who is signed in right now. The dashboard keys all its data off `uid`,
+    so a new sign-in with a different Google account switches the view."""
+    if not gmail_auth.is_authorized(account):
+        return {"account": account, "authorized": False, "email": None, "uid": None}
+    email = get_profile(account)["emailAddress"]
+    return {"account": account, "authorized": True, "email": email, "uid": fs.make_uid(email)}
 
 
 @router.get("/login")
