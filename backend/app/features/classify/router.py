@@ -4,6 +4,7 @@ from fastapi import APIRouter, Query
 
 from app.models.email import EmailMessage
 from app.services import firestore_client as fs
+from app.services.deadlines import extract_due_date
 from app.services.classifier import (
     CATEGORIES,
     extract_promo_subcategory,
@@ -36,6 +37,11 @@ def classify(uid: str, backend: str = "rules", limit: int = Query(25, le=200)):
         fs.set_category(uid, email.id, category, confidence)
         if category == "promotion":
             fs.set_promo_subcategory(uid, email.id, extract_promo_subcategory(email))
+        email.category = category
+        due_date, due_label = extract_due_date(email) or (None, None)
+        # Only write when it changed, so a re-run doesn't touch every doc twice.
+        if (due_date, due_label) != (doc.get("due_date"), doc.get("due_label")):
+            fs.set_due_date(uid, email.id, due_date, due_label)
         results.append({"id": email.id, "category": category, "confidence": confidence})
     return {"backend": clf.name, "classified": len(results), "results": results}
 

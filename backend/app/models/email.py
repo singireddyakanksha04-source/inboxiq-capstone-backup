@@ -37,3 +37,7 @@ class EmailMessage(BaseModel):
 
     # filled in for category == "promotion" by extract_promo_subcategory
     promo_subcategory: str | None = None
+
+    # filled in by extract_due_date (bill, subscription, personal, ...)
+    due_date: str | None = None           # ISO date, e.g. '2026-10-03'
+    due_label: str | None = None          # Payment due | Expires | Renews | Event | Deadline

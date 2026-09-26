@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { AccountMenu } from "./features/auth/AccountMenu.jsx";
 import { ConnectGmail } from "./features/auth/ConnectGmail.jsx";
 import { useAuth } from "./features/auth/useAuth.js";
+import { dueInfo } from "./features/emails/EmailCard.jsx";
 import { EmailList } from "./features/emails/EmailList.jsx";
 import { ReadingPane } from "./features/emails/ReadingPane.jsx";
 import { useEmails } from "./features/emails/useEmails.js";
@@ -28,6 +29,9 @@ export default function App() {
   const [selectedId, setSelectedId] = useState(null);
   // Narrow windows show one of list/detail at a time.
   const [showDetail, setShowDetail] = useState(false);
+  const detailRef = useRef(null);
+  const selectedRef = useRef(null);
+  selectedRef.current = selectedId;
 
   // New account: start from a clean slate, not the old account's filter/status.
   useEffect(() => {
@@ -50,7 +54,8 @@ export default function App() {
   } = useSubscriptions(authorized ? uid : "");
 
   useEffect(() => {
-    const onKey = (e) => { if (e.key === "Escape") closeMessage(); };
+    // Skipped when a popover already used this Escape to close itself.
+    const onKey = (e) => { if (e.key === "Escape" && !e.defaultPrevented) closeMessage(); };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, []);
@@ -66,14 +71,30 @@ export default function App() {
     setShowDetail(false);
   }
 
+  // When the panes swap (narrow windows) or the reader closes, keyboard focus
+  // would fall back to the page; move it to what is now on screen.
   function openMessage(id) {
     setSelectedId(id);
     setShowDetail(true);
+    requestAnimationFrame(() => {
+      const a = document.activeElement;
+      if (a === document.body || a?.offsetParent === null) {
+        detailRef.current?.querySelector("button")?.focus();
+      }
+    });
   }
 
   function closeMessage() {
+    const id = selectedRef.current;
     setSelectedId(null);
     setShowDetail(false);
+    if (!id) return;
+    requestAnimationFrame(() => {
+      const a = document.activeElement;
+      if (a === document.body || detailRef.current?.contains(a)) {
+        document.querySelector(`.message[data-id="${CSS.escape(id)}"]`)?.focus();
+      }
+    });
   }
 
   function openSummary() {
@@ -88,7 +109,7 @@ export default function App() {
     return (
       <>
         <ConnectGmail />
-        {authError && <div className="toast">{authError}</div>}
+        {authError && <div className="toast" role="alert">{authError}</div>}
       </>
     );
   }
@@ -100,6 +121,10 @@ export default function App() {
   const selected = emails.find((m) => m.id === selectedId);
   const title = category ? categoryMeta(category).label : "All Mail";
   // How many this mailbox holds, against the 50 the list loads.
+  const upcoming = emails.filter((m) => {
+    const due = dueInfo(m);
+    return due && due.days >= 0 && due.days <= 14;
+  }).length;
   const shown = category
     ? counts[category] || 0
     : Object.values(counts).reduce((a, b) => a + b, 0);
@@ -127,7 +152,8 @@ export default function App() {
           </span>
         </div>
         <div className="toolbar-actions">
-          {status && <span className="status" role="status">{status}</span>}
+          {/* Always mounted so screen readers announce each sync step. */}
+          <span className="status" role="status" aria-live="polite">{status}</span>
           <button className="tool-btn only-narrow-mid" onClick={openSummary} aria-label="Summary"
             title="Summary">
             <Icon name="summary" size={16} />
@@ -141,7 +167,8 @@ export default function App() {
       <EmailList emails={emails} title={title} loading={loading} empty={empty}
         selectedId={selectedId} onSelect={openMessage} />
 
-      <section className="pane detail-pane">
+      <section className="pane detail-pane" ref={detailRef}
+        aria-label={selected ? "Message" : "Summary"}>
         {selected ? (
           <ReadingPane key={selected.id} uid={uid} email={selected} onClose={closeMessage} />
         ) : (
@@ -154,7 +181,7 @@ export default function App() {
             <div className="summary-body">
               <h1 className="large-title">Summary</h1>
               <OverviewCards counts={counts} subsCount={subs.length} monthlyCost={monthlyCost}
-                onPick={pickMailbox} />
+                upcoming={upcoming} onPick={pickMailbox} />
               <SubscriptionsPanel uid={uid} subs={subs} monthlyCost={monthlyCost} busy={subsBusy}
                 onDetect={detectSubs} />
             </div>
@@ -162,7 +189,7 @@ export default function App() {
         )}
       </section>
 
-      {error && <div className="toast">{error}</div>}
+      {error && <div className="toast" role="alert">{error}</div>}
     </div>
   );
 }

@@ -70,6 +70,8 @@ DERIVED_FIELDS = frozenset({
     "sub_amount",
     "sub_cycle",
     "sub_renewal_hint",
+    "due_date",
+    "due_label",
 })
 
 
@@ -390,3 +392,10 @@ def count_by_category(uid: str) -> dict[str, int]:
         key = (doc.to_dict() or {}).get("category") or "uncategorized"
         counts[key] = counts.get(key, 0) + 1
     return counts
+
+
+def set_due_date(uid: str, message_id: str, due_date: str | None, due_label: str | None) -> None:
+    """Hook for extract_due_date. None clears a date left by an earlier run."""
+    _emails(uid).document(message_id).set(
+        {"due_date": due_date, "due_label": due_label}, merge=True
+    )

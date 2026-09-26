@@ -5,7 +5,7 @@ import { CATEGORY_ACTIONS, categoryMeta } from "../../lib/categories.js";
 import { Icon } from "../../lib/icons.jsx";
 import { toneFor } from "../../lib/tones.js";
 
-import { cleanText, senderName } from "./EmailCard.jsx";
+import { cleanText, dueInfo, senderName } from "./EmailCard.jsx";
 
 function longDate(iso) {
   if (!iso) return "";
@@ -33,7 +33,8 @@ function withShortLinks(text) {
     try { host = new URL(part).hostname.replace(/^www\./, ""); } catch {}
     return (
       <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="reader-link">
-        {host} ↗
+        {host} <span aria-hidden="true">↗</span>
+        <span className="sr-only"> (opens in a new tab)</span>
       </a>
     );
   });
@@ -56,6 +57,7 @@ export function ReadingPane({ uid, email, onClose }) {
   const m = categoryMeta(email.category);
   const action = CATEGORY_ACTIONS[email.category];
   const name = senderName(email);
+  const due = dueInfo(email);
 
   return (
     <article className="reader">
@@ -78,22 +80,27 @@ export function ReadingPane({ uid, email, onClose }) {
             <span className="reader-sender">{name}</span>
             <span className="reader-address">{email.sender_email || email.sender_domain}</span>
           </div>
-          <time className="reader-date">{longDate(email.date)}</time>
+          <time className="reader-date" dateTime={email.date || undefined}>{longDate(email.date)}</time>
         </div>
 
         <div className="reader-insight">
-          <span className={`tile tone-${m.tone}`}><Icon name={m.icon} size={15} strokeWidth={2} /></span>
+          <span className={`tile tone-${m.tone}`} aria-hidden="true"><Icon name={m.icon} size={15} strokeWidth={2} /></span>
           <div>
             <span className={`reader-insight-title ink-${m.tone}`}>
               {m.label}
               {email.promo_subcategory && ` · ${email.promo_subcategory}`}
             </span>
             <span className="reader-insight-text">{action || "No action needed"}</span>
+            {due && (
+              <span className={due.soon ? "reader-insight-text reader-due ink-red" : "reader-insight-text reader-due"}>
+                {email.due_label} {due.long} · {due.overdue ? `overdue, ${due.relative}` : due.relative}
+              </span>
+            )}
           </div>
         </div>
 
         {body === null ? (
-          <div className="reader-loading"><span className="spinner" aria-hidden="true" /> Loading message…</div>
+          <div className="reader-loading" role="status"><span className="spinner" aria-hidden="true" /> Loading message…</div>
         ) : (
           <div className="reader-text">{withShortLinks(body)}</div>
         )}

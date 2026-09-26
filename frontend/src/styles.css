@@ -1050,3 +1050,50 @@ button:disabled { cursor: default; }
 .cleanup { margin-top: 12px; }
 .cleanup-note { padding: 0 4px 6px; font-size: 12px; color: var(--label-3); }
 .cleanup a.link-btn { flex-shrink: 0; text-decoration: none; }
+
+/* ------------------------------------------------------------------
+   Due dates and keyboard access (Sprint 4). Uses the existing colour
+   tokens only; nothing above is restyled.
+   ------------------------------------------------------------------ */
+
+/* Solid ring with a gap so keyboard focus shows on any surface, including
+   the accent-filled selected row and mailbox. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.message:focus-visible,
+.source-item:focus-visible { outline-offset: 1px; }
+.message.sel:focus-visible { box-shadow: inset 0 0 0 2px var(--on-accent); }
+.menu-item:focus-visible { background: var(--accent); color: var(--on-accent); outline: none; }
+
+/* Read by screen readers, not drawn. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The sync status stays mounted as a live region; out of the row while empty. */
+.status:empty { position: absolute; }
+
+.due-chip { font-variant-numeric: tabular-nums; }
+.reader-due { margin-top: 2px; font-weight: 500; }
+
+@media (max-width: 720px) {
+  /* still hidden on phones, but announced */
+  .status {
+    display: block;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+}

@@ -29,18 +29,32 @@ export function useAppearance() {
 }
 
 // Light / Dark / Auto, like the Appearance setting on a Mac. "Auto" leaves the
-// page to the system setting; the other two pin it.
+// page to the system setting; the other two pin it. A radio group: one Tab
+// stop, arrow keys pick the next option.
 export function AppearanceControl({ mode, onChange }) {
+  function onKeyDown(e) {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+    if (!step) return;
+    e.preventDefault();
+    const i = MODES.findIndex((m) => m.id === mode);
+    const next = MODES[(i + step + MODES.length) % MODES.length];
+    onChange(next.id);
+    e.currentTarget.querySelector(`[data-mode="${next.id}"]`)?.focus();
+  }
+
   return (
     <div className="appearance">
-      <span className="menu-caption">Appearance</span>
-      <div className="segmented" role="radiogroup" aria-label="Appearance">
+      <span className="menu-caption" id="appearance-label">Appearance</span>
+      <div className="segmented" role="radiogroup" aria-labelledby="appearance-label"
+        onKeyDown={onKeyDown}>
         {MODES.map((m) => (
           <button
             key={m.id}
             className={m.id === mode ? "segment on" : "segment"}
             role="radio"
             aria-checked={m.id === mode}
+            tabIndex={m.id === mode ? 0 : -1}
+            data-mode={m.id}
             onClick={() => onChange(m.id)}
           >
             {m.label}

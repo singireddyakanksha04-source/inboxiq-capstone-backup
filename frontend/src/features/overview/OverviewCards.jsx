@@ -3,7 +3,8 @@ import { Icon } from "../../lib/icons.jsx";
 
 // Summary shown in the detail pane when no message is open. Every widget
 // is a shortcut: clicking it opens the mailbox behind the number.
-export function OverviewCards({ counts, subsCount, monthlyCost, onPick }) {
+// `upcoming` counts due dates in the next two weeks among the loaded messages.
+export function OverviewCards({ counts, subsCount, monthlyCost, upcoming = 0, onPick }) {
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   const ordered = orderedCounts(counts);
   const urgent = ordered.filter(([c]) => categoryMeta(c).urgent);
@@ -42,9 +43,14 @@ export function OverviewCards({ counts, subsCount, monthlyCost, onPick }) {
         <Widget icon="attention" tone="red" label="Needs Attention"
           value={needsAction} alert={needsAction > 0}
           onClick={() => onPick(urgent[0]?.[0] ?? null)}>
-          {urgent.length
-            ? urgent.map(([c, n]) => `${n} ${categoryMeta(c).label.toLowerCase()}`).join(" · ")
-            : "Nothing urgent"}
+          <span>
+            {urgent.length
+              ? urgent.map(([c, n]) => `${n} ${categoryMeta(c).label.toLowerCase()}`).join(" · ")
+              : "Nothing urgent"}
+          </span>
+          {upcoming > 0 && (
+            <span>{upcoming} upcoming date{upcoming === 1 ? "" : "s"} in this list</span>
+          )}
         </Widget>
 
         <Widget icon="promotion" tone="pink" label="Promotions" value={promos}
@@ -68,7 +74,7 @@ function Widget({ icon, tone, label, value, alert, onClick, children }) {
   return (
     <button className="widget" onClick={onClick}>
       <span className="widget-head">
-        <span className={`tile tone-${tone}`}><Icon name={icon} size={14} strokeWidth={2.2} /></span>
+        <span className={`tile tone-${tone}`} aria-hidden="true"><Icon name={icon} size={14} strokeWidth={2.2} /></span>
         <span className="widget-label">{label}</span>
       </span>
       <span className={alert ? "widget-value ink-red" : "widget-value"}>{value}</span>
