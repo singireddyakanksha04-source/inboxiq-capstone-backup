@@ -45,7 +45,7 @@ def detect_subscriptions(uid: str):
     """Pull service/amount/cycle/renewal hint out of every already-categorised
     'subscription' email. Run classify first so there's something to scan."""
     results = []
-    for doc in fs.list_subscriptions(uid):
+    for doc in fs.list_subscriptions(uid, merged=False):
         email = EmailMessage(
             **{k: v for k, v in doc.items() if k in EmailMessage.model_fields}
         )

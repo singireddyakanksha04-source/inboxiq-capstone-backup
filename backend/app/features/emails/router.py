@@ -20,7 +20,17 @@ def stats(uid: str):
 @router.get("/subscriptions")
 def subscriptions(uid: str):
     subs = fs.list_subscriptions(uid)
-    return {"items": subs, "estimated_monthly_cost": fs.estimate_monthly_cost(subs)}
+    return {
+        "items": subs,
+        "estimated_monthly_cost": fs.estimate_monthly_cost(subs),
+        "stale_count": sum(1 for s in subs if s.get("is_stale")),
+    }
+
+
+@router.get("/unsubscribe-suggestions")
+def unsubscribe_suggestions(uid: str, limit: int = 20):
+    """Read-only list for the cleanup view; links are only shown, never followed."""
+    return {"items": fs.unsubscribe_suggestions(uid, limit=limit)}
 
 
 @router.get("/{message_id}")

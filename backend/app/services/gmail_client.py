@@ -62,6 +62,17 @@ def _clean_body_text(text: str) -> str:
     return text.strip()
 
 
+def _unsubscribe_link(head: dict[str, str]) -> str | None:
+    """List-Unsubscribe is a comma-separated list of <...> links, usually a
+    mailto and/or an https one. The https link is the better one to hand the
+    user (with List-Unsubscribe-Post it is a one-click link), so prefer it."""
+    links = re.findall(r"<\s*([^>\s]+)\s*>", head.get("list-unsubscribe", ""))
+    web = [u for u in links if u.lower().startswith(("https://", "http://"))]
+    web.sort(key=lambda u: not u.lower().startswith("https://"))
+    mail = [u for u in links if u.lower().startswith("mailto:")]
+    return (web or mail or [None])[0]
+
+
 def parse_message(raw: dict) -> EmailMessage:
     payload = raw.get("payload", {})
     head = _headers(payload)
@@ -88,6 +99,7 @@ def parse_message(raw: dict) -> EmailMessage:
         snippet=unescape(raw.get("snippet", "")),
         body_text=_extract_body(payload)[:20000],
         labels=raw.get("labelIds", []),
+        list_unsubscribe=_unsubscribe_link(head),
     )
 
 

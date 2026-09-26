@@ -344,7 +344,26 @@ def extract_promo_subcategory(email: EmailMessage) -> str | None:
 
 # --------------------------------------------------- subscription extraction
 
-_AMOUNT_RE = re.compile(r"\$\s?\d+(?:\.\d{2})?")
+# "$9.99", "US$9.99", "USD 12.00", "$1,299.00", or a bare "9.99" that is
+# followed by a currency word or a billing period ("9.99 per month").
+_NUM = r"\d{1,4}(?:,\d{3})*"
+_AMOUNT_RE = re.compile(
+    rf"(?:US\$|\$|\bUSD\s?)\s?({_NUM}(?:\.\d{{2}})?)(?![\d,])"
+    rf"|(?<![\d.,$])({_NUM}\.\d{{2}})(?=\s?(?:USD|dollars|/\s?mo|/\s?yr|per\s|a\s(?:month|year)))",
+    re.I,
+)
+# Billing period written right after the amount: "/mo", " per month", " a year".
+_PERIOD_RE = re.compile(
+    r"\s?(?:USD|dollars)?\s?(?:/|per|a|each)\s?(mo|month|yr|year|annum)\b", re.I
+)
+# Words near an amount that say it is the actual charge vs. a promo figure.
+_CHARGE_RE = re.compile(
+    r"\b(charged?|billed|billing|total|amount|payment|paid|price|renew\w*|"
+    r"subscription|plan|membership|due)\b",
+    re.I,
+)
+_PROMO_RE = re.compile(r"\b(save|off|discount|credit|gift|reward|cash ?back|up to)\b", re.I)
+
 _CYCLE_RE = re.compile(r"\b(monthly|annual(?:ly)?|yearly|per month|per year|free trial)\b", re.I)
 _RENEWAL_RE = re.compile(
     r"(renews?\s+on|next billing date|renewal date|your trial ends|billed on)\s*[:\-]?\s*(.{0,30})",
@@ -352,13 +371,52 @@ _RENEWAL_RE = re.compile(
 )
 
 _STOPWORDS = {"the", "team", "inc", "no-reply", "noreply", "support", "billing"}
+# Trailing words that make "Netflix Account" look like a different service.
+_NAME_NOISE = {
+    "account", "accounts", "billing", "team", "support", "payments", "receipts",
+    "notifications", "no-reply", "noreply", "members", "membership", "inc", "llc",
+}
 
 
 def _guess_service_name(email: EmailMessage) -> str:
-    name = email.sender.split("<")[0].strip().strip('"')
+    words = email.sender.split("<")[0].strip().strip('"').split()
+    while words and words[-1].lower().strip(".,") in _NAME_NOISE:
+        words.pop()
+    name = " ".join(words)
     if name and name.lower() not in _STOPWORDS:
         return name
-    return email.sender_domain.split(".")[0].capitalize()
+    # members.netflix.com -> "Netflix": the label before the TLD, not the
+    # first; netflix.co.uk -> "Netflix", not "Co".
+    labels = email.sender_domain.lower().split(".")
+    if len(labels) > 2 and labels[-2] in {"co", "com", "org", "net", "ac", "gov", "edu"}:
+        labels.pop()
+    return (labels[-2] if len(labels) > 1 else labels[0]).capitalize()
+
+
+def _pick_amount(blob: str) -> tuple[float, str | None] | None:
+    """Best-scoring charge amount in the text, with the billing period written
+    next to it if any. Promo figures ("save $20", "$5 off") lose to amounts
+    near billing words; if only promo figures are present, nothing is returned."""
+    best = None
+    for m in _AMOUNT_RE.finditer(blob):
+        value = float((m.group(1) or m.group(2)).replace(",", ""))
+        if value == 0:  # "$0.00 due today" on a trial is not the price
+            continue
+        before = blob[max(0, m.start() - 50) : m.start()]
+        after = blob[m.end() : m.end() + 20]
+        period = _PERIOD_RE.match(after)
+        score = 0
+        if period:
+            score += 2
+        if _CHARGE_RE.search(before):
+            score += 1
+        if _PROMO_RE.search(blob[max(0, m.start() - 20) : m.start()]) or re.match(
+            r"\s?off\b", after, re.I
+        ):
+            score -= 2
+        if score >= 0 and (best is None or score > best[0]):
+            best = (score, value, period.group(1).lower() if period else None)
+    return (best[1], best[2]) if best else None
 
 
 def extract_subscription_info(email: EmailMessage) -> dict:
@@ -367,7 +425,7 @@ def extract_subscription_info(email: EmailMessage) -> dict:
     philosophy as RuleClassifier."""
     blob = f"{email.subject}\n{email.snippet}\n{email.body_text[:2000]}"
 
-    amount_match = _AMOUNT_RE.search(blob)
+    amount = _pick_amount(blob)
     cycle_match = _CYCLE_RE.search(blob)
     renewal_match = _RENEWAL_RE.search(blob)
 
@@ -380,10 +438,14 @@ def extract_subscription_info(email: EmailMessage) -> dict:
             cycle = "yearly"
         else:
             cycle = "monthly"
+    # A period written on the amount itself ("$99/yr") beats a cycle word
+    # found elsewhere in the email, except for trials.
+    if amount and amount[1] and cycle != "trial":
+        cycle = "monthly" if amount[1].startswith("mo") else "yearly"
 
     return {
         "sub_service": _guess_service_name(email),
-        "sub_amount": amount_match.group(0) if amount_match else None,
+        "sub_amount": f"${amount[0]:,.2f}" if amount else None,
         "sub_cycle": cycle,
         "sub_renewal_hint": renewal_match.group(2).strip() if renewal_match else None,
     }

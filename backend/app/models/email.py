@@ -33,6 +33,7 @@ class EmailMessage(BaseModel):
     sub_amount: str | None = None
     sub_cycle: str | None = None          # monthly | yearly | trial
     sub_renewal_hint: str | None = None   # raw text near the renewal date, not parsed
+    list_unsubscribe: str | None = None   # List-Unsubscribe header link, https preferred over mailto
 
     # filled in for category == "promotion" by extract_promo_subcategory
     promo_subcategory: str | None = None

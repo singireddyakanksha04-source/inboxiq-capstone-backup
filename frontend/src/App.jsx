@@ -155,7 +155,7 @@ export default function App() {
               <h1 className="large-title">Summary</h1>
               <OverviewCards counts={counts} subsCount={subs.length} monthlyCost={monthlyCost}
                 onPick={pickMailbox} />
-              <SubscriptionsPanel subs={subs} monthlyCost={monthlyCost} busy={subsBusy}
+              <SubscriptionsPanel uid={uid} subs={subs} monthlyCost={monthlyCost} busy={subsBusy}
                 onDetect={detectSubs} />
             </div>
           </div>

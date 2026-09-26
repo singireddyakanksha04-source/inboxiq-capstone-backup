@@ -139,11 +139,125 @@ def set_subscription_info(uid: str, message_id: str, info: dict) -> None:
     _emails(uid).document(message_id).set(info, merge=True)
 
 
-def list_subscriptions(uid: str) -> list[dict]:
-    return list_emails(uid, limit=200, category="subscription")
+def list_subscriptions(uid: str, merged: bool = True) -> list[dict]:
+    """Every subscription email, or (merged) one entry per service."""
+    docs = list_emails(uid, limit=200, category="subscription")
+    return _merge_by_service(docs) if merged else docs
 
 
-_AMOUNT_RE = re.compile(r"\$\s?(\d+(?:\.\d{2})?)")
+# Senders that mail on behalf of many different services, so their domain
+# says nothing about which service it is; those merge on name only.
+_SHARED_DOMAINS = {
+    "gmail", "googlemail", "google", "outlook", "hotmail", "yahoo", "icloud",
+    "apple", "paypal", "stripe",
+}
+
+
+def _domain_label(domain: str | None) -> str:
+    """Registrable name of a sender domain: members.netflix.com -> 'netflix',
+    netflix.co.uk -> 'netflix' (not 'co')."""
+    labels = (domain or "").lower().split(".")
+    if len(labels) < 2:
+        return ""
+    if len(labels) > 2 and len(labels[-1]) == 2 and labels[-2] in {
+        "co", "com", "org", "net", "ac", "gov", "edu"
+    }:
+        return labels[-3]
+    return labels[-2]
+
+
+def _service_keys(doc: dict) -> set[str]:
+    """Keys that identify one service: the registrable domain's name
+    (members.netflix.com and account.netflix.com -> 'netflix') and the
+    compacted display name ('Best Buy' -> 'bestbuy')."""
+    keys = set()
+    label = _domain_label(doc.get("sender_domain"))
+    if label and label not in _SHARED_DOMAINS:
+        keys.add(label)
+    name = re.sub(r"[^a-z0-9]", "", (doc.get("sub_service") or "").lower())
+    if name:
+        keys.add(name)
+    return keys or {doc.get("id", "")}
+
+
+def _merge_by_service(docs: list[dict]) -> list[dict]:
+    """Collapse several emails from the same service into one entry. Input is
+    newest-first; each group keeps its newest email that has an amount (else
+    its newest), under the shortest service name seen ('Best Buy' over
+    'Best Buy Labor Day Sale'), plus how many emails were merged."""
+    return [rep for rep, _ in _group_by_service(docs)]
+
+
+def _group_by_service(docs: list[dict]) -> list[tuple[dict, list[dict]]]:
+    """_merge_by_service, but each entry also keeps the emails it merged."""
+    groups: list[tuple[set[str], list[dict]]] = []
+    for doc in docs:
+        keys = _service_keys(doc)
+        hit = next((g for g in groups if g[0] & keys), None)
+        if hit:
+            hit[0].update(keys)
+            hit[1].append(doc)
+        else:
+            groups.append((keys, [doc]))
+
+    merged = []
+    now = _now()
+    for _, members in groups:
+        rep = dict(next((d for d in members if d.get("sub_amount")), members[0]))
+        names = [d["sub_service"] for d in members if d.get("sub_service")]
+        if names:
+            rep["sub_service"] = min(names, key=len)
+        rep["sub_email_count"] = len(members)
+        rep.update(_staleness(members, rep.get("sub_cycle"), now))
+        merged.append((rep, members))
+    return merged
+
+
+# How long a service can go quiet, by billing cycle, before it looks
+# forgotten: a monthly plan normally mails a receipt every month.
+_STALE_AFTER_DAYS = {"monthly": 45, "trial": 45, "yearly": 400}
+_STALE_AFTER_UNKNOWN = 60
+# "We miss you" style mail: the service itself says it isn't being used.
+_WINBACK_RE = re.compile(
+    r"\b(haven'?t (?:used|seen you|logged in|visited)|we miss you|miss(?:ing)? you|"
+    r"come back|it'?s been a while|still interested|win you back|reactivate|"
+    r"we haven'?t seen)\b",
+    re.I,
+)
+
+
+def _last_seen(members: list[dict]) -> datetime | None:
+    dates = [d["date"] for d in members if d.get("date")]
+    return max(dates) if dates else None
+
+
+def _is_winback(doc: dict) -> bool:
+    return bool(_WINBACK_RE.search(f"{doc.get('subject', '')}\n{doc.get('snippet', '')}"))
+
+
+def _staleness(members: list[dict], cycle: str | None, now: datetime) -> dict:
+    """last_seen/email_count for a merged service, and whether it looks
+    stale: nothing from it for longer than its cycle allows, or the service
+    itself sending 'we miss you' mail."""
+    cycle = cycle or next((d["sub_cycle"] for d in members if d.get("sub_cycle")), None)
+    last_seen = _last_seen(members)
+    reason = None
+    if last_seen:
+        quiet = (now - last_seen).days
+        if quiet >= _STALE_AFTER_DAYS.get(cycle, _STALE_AFTER_UNKNOWN):
+            plan = f" ({cycle} plan)" if cycle in ("monthly", "yearly") else ""
+            reason = f"No email in {quiet} days{plan}"
+    if not reason and any(_is_winback(d) for d in members):
+        reason = "Service says you haven't been using it"
+    return {
+        "last_seen": last_seen,
+        "email_count": len(members),
+        "is_stale": reason is not None,
+        "stale_reason": reason,
+    }
+
+
+_AMOUNT_RE = re.compile(r"\$\s?(\d[\d,]*(?:\.\d{2})?)")
 
 
 def estimate_monthly_cost(subscriptions: list[dict]) -> float:
@@ -158,13 +272,116 @@ def estimate_monthly_cost(subscriptions: list[dict]) -> float:
         match = _AMOUNT_RE.search(amount)
         if not match:
             continue
-        value = float(match.group(1))
+        value = float(match.group(1).replace(",", ""))
         if sub.get("sub_cycle") == "yearly":
             value /= 12
         elif sub.get("sub_cycle") == "trial":
             continue
         total += value
     return round(total, 2)
+
+
+# ---------------------------------------------------------------- cleanup
+
+# A link attached to the word on the same line ("[Unsubscribe](https://...)",
+# "Unsubscribe: https://...", "Unsubscribe <https://...>"), else any link
+# whose path says unsubscribe. A bare link on the next line is not trusted:
+# plain-text mail puts links before and after their labels about equally.
+_URL = r"https?://[^\s<>()\[\]\"']+"
+_UNSUB_NEAR_RE = re.compile(rf"unsubscribe\]?[ \t]*[(:<][ \t]*({_URL})", re.I)
+_UNSUB_URL_RE = re.compile(rf"https?://[^\s<>()\[\]\"']*(?:unsub|opt-?out)[^\s<>()\[\]\"']*", re.I)
+
+# Promo/newsletter senders need this many emails before they are worth
+# suggesting; more than _BULK_COUNT is suggested even if some were opened.
+_MIN_COUNT = 3
+_BULK_COUNT = 6
+
+
+def _unsubscribe_link(members: list[dict]) -> tuple[str | None, str | None]:
+    """Newest List-Unsubscribe header link, else a link found in a body.
+    Mail synced before the header was captured has no list_unsubscribe, so
+    the body is the fallback. Returns (link, 'header' | 'body' | None)."""
+    for doc in members:
+        if doc.get("list_unsubscribe"):
+            return doc["list_unsubscribe"], "header"
+    for doc in members[:5]:
+        body = doc.get("body_text") or ""
+        m = _UNSUB_NEAR_RE.search(body)
+        link = m.group(1) if m else None
+        if not link:
+            m = _UNSUB_URL_RE.search(body)
+            link = m.group(0) if m else None
+        if link:
+            return link.rstrip(".,;:!>"), "body"
+    return None, None
+
+
+def _sender_name(doc: dict) -> str:
+    name = (doc.get("sender") or "").split("<")[0].strip().strip('"').strip()
+    return name or doc.get("sender_domain") or doc.get("sender_email") or "Unknown sender"
+
+
+def _suggestion(members: list[dict], name: str, category: str, reason: str) -> dict:
+    link, source = _unsubscribe_link(members)
+    newest = members[0]
+    return {
+        "service": name,
+        "sender": newest.get("sender_email") or newest.get("sender"),
+        "sender_domain": newest.get("sender_domain"),
+        "category": category,
+        "count": len(members),
+        "last_seen": _last_seen(members),
+        "reason": reason,
+        "unsubscribe_url": link,
+        "link_source": source,
+        "latest_id": newest.get("id"),
+    }
+
+
+def unsubscribe_suggestions(uid: str, limit: int = 20) -> list[dict]:
+    """Senders worth unsubscribing from: stale subscriptions, and promotion/
+    newsletter senders that mail a lot and whose mail sits unopened. There is
+    no open tracking, so 'unopened' means still UNREAD when it was synced.
+    Only reads stored mail; never follows any unsubscribe link."""
+    out = []
+    for rep, members in _group_by_service(list_emails(uid, limit=200, category="subscription")):
+        if rep.get("is_stale"):
+            out.append(_suggestion(
+                members, rep.get("sub_service") or _sender_name(members[0]),
+                "subscription", rep["stale_reason"],
+            ))
+
+    bulk = list_emails(uid, limit=300, category="promotion") + list_emails(
+        uid, limit=300, category="newsletter"
+    )
+    bulk.sort(key=lambda d: d.get("date") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    senders: dict[str, list[dict]] = {}
+    for doc in bulk:
+        label = _domain_label(doc.get("sender_domain"))
+        key = label if label and label not in _SHARED_DOMAINS else doc.get("sender_email", "")
+        senders.setdefault(key, []).append(doc)
+
+    for members in senders.values():
+        labels = [set(d.get("labels") or []) for d in members]
+        if any("STARRED" in ls for ls in labels):
+            continue  # starred something from them, so they're wanted
+        count = len(members)
+        unread = sum(1 for ls in labels if "UNREAD" in ls)
+        kind = "newsletter" if all(d.get("category") == "newsletter" for d in members) else "promotion"
+        noun = f"{kind} emails" if kind == "newsletter" else "promotional emails"
+        if count >= _MIN_COUNT and unread == count:
+            reason = f"{count} {noun}, none opened"
+        elif count >= _BULK_COUNT:
+            reason = f"{count} {noun}, {unread} unopened"
+        elif any(_is_winback(d) for d in members) and unread == count:
+            reason = "Sender says you haven't been engaging"
+        else:
+            continue
+        out.append(_suggestion(members, _sender_name(members[0]), kind, reason))
+
+    # Stale subscriptions first (they may cost money), then the noisiest senders.
+    out.sort(key=lambda s: (s["category"] != "subscription", -s["count"]))
+    return out[:limit]
 
 
 def count_by_category(uid: str) -> dict[str, int]:
