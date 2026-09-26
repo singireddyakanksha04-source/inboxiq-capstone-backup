@@ -50,33 +50,155 @@ class Classifier(Protocol):
 
 # --------------------------------------------------------------- rules baseline
 
-_RULES: list[tuple[str, str]] = [
-    ("otp", r"\b(one[- ]time (pass)?code|verification code|temporary (access )?code|otp|\b\d{6}\b is your)\b"),
+# Codes and account-safety mail. Checked before everything else, even Gmail's
+# Personal label, because a reset code from a sender Gmail files as personal
+# is still a code.
+_URGENT_RULES: list[tuple[str, str]] = [
+    (
+        "otp",
+        r"\b(one[- ]time (pass)?code|verification code|temporary (access )?code|"
+        r"(password )?reset code|security code|log-?in code|sign-?in code|"
+        r"otp|\b\d{6}\b is your)\b",
+    ),
     (
         "security",
         r"\b(new device|new sign-?in|signed in (to|from)|verify it'?s you|"
         r"security alert|suspicious (login|activity)|shared (your|some).*data|"
         r"account access|someone (used|is using) your)\b",
     ),
-    ("shipping", r"\b(shipped|out for delivery|tracking number|arriving|delivered)\b"),
+]
+
+_RULES: list[tuple[str, str]] = [
+    # Needs a parcel/order in the sentence: a bare "delivered" or "arriving"
+    # also shows up in car ads ("new inventory arriving") and product news
+    # ("we shipped ...").
+    (
+        "shipping",
+        r"\b(out for delivery|tracking (number|id|#|info\w*|link)|"
+        r"track (your )?(package|order|shipment|parcel|delivery)|"
+        r"(package|order|shipment|parcel|item)s? (has |have |was |were |is |are )?"
+        r"(been )?(shipped|delivered|on (its|the) way|arriving|out for delivery)|"
+        r"(has|have) shipped|delivery (update|attempt|exception)|"
+        r"arriving (today|tomorrow|on (mon|tue|wed|thu|fri|sat|sun)))\b",
+    ),
     ("receipt", r"\b(receipt|order confirm|your order|thanks for your (order|purchase)|invoice paid)\b"),
-    ("bill", r"\b(payment due|amount due|statement is ready|autopay|past due|invoice)\b"),
-    ("subscription", r"\b(renew(s|al|ed)?|free trial|billing cycle|membership|plan will)\b"),
+    (
+        "bill",
+        r"\b(payment due|amount due|statement is ready|statement is available|"
+        r"autopay|past due|minimum payment|(new|your) invoice|"
+        r"invoice (is )?(available|attached|due|#))\b",
+    ),
+    # Lifecycle of a subscription the user already has. Plain "membership" or
+    # "annual subscription" is also sales copy and fine print on deal mail.
+    (
+        "subscription",
+        r"\b(renews? (on|automatically|soon|in \d+ days)|auto-?renew(al|s|ed)? (on|is|will|notice)|"
+        r"renewal (date|notice|reminder|confirmation)|"
+        r"(your )?(free )?trial (ends|is ending|will end|expires|has ended|ending soon)|"
+        r"billing cycle|next billing date|"
+        r"(your|the) (plan|subscription|membership) (has been |was |is |will be |will )?"
+        r"(renewed|renews|cancell?ed|expired|expires|expiring|ending|ends|paused|"
+        r"activated|confirmed|started)|"
+        r"plan will (renew|end|expire|change)|"
+        r"subscription (confirmation|receipt|renewal|cancell?ation|has been))\b",
+    ),
     (
         "alert",
         r"\b(new listing|price drop|saved search|search alert|top match|"
         r"job match(es)?|new job(s)? for you|now hiring|recommended for you|"
         r"based on your (recent )?(activity|search))\b",
     ),
-    ("promotion", r"(\b\d{1,2}% off\b|sale ends|limited time|deal|coupon|promo code|shop now|save big)"),
-    ("newsletter", r"\b(newsletter|this week in|digest|unsubscribe from our list|issue #)\b"),
+    (
+        "promotion",
+        r"(\b\d{1,2}% off\b|sale ends|limited time|\bdeals?\b|coupon|promo code|"
+        r"shop now|save big|\bclearance\b|\bsave (today|now)\b|for \$0(\.00)?\b|\b\d+ months? of \w+( \w+)? for (free|\$0)|"
+        r"try (\w+ )?premium)",
+    ),
+    (
+        "newsletter",
+        r"\b(newsletter|this week in|digest|unsubscribe from our list|issue #|"
+        r"weekly (\w+ )?(news|roundup|recap))\b",
+    ),
 ]
+
+# Account notices and event confirmations. Only used when nothing above
+# matched and Gmail did not file the mail under Promotions, since the same
+# words ("webinar", "account") are common in marketing.
+_NOTICE_RULES: list[tuple[str, str]] = [
+    (
+        "alert",
+        r"\b(available balance|balance (is )?(below|above)|daily (account )?summary|"
+        r"zelle|contact information (change|update)|you received a new (letter|document|message)|"
+        r"direct deposit|(large|new) (purchase|transaction)|account alert)\b",
+    ),
+    (
+        "alert",
+        r"\b(registration (is )?confirmed|you'?re registered|"
+        r"confirm your (spot|seat|registration|application)|webinar|webclass|"
+        r"event reminder|meetup|rsvp)\b",
+    ),
+]
+
+# Shipping words from these senders are car/home listings ("new inventory
+# arriving", "price drop"), never a parcel.
+_LISTING_DOMAINS = (
+    "realtor.com", "zillow.com", "cars.com", "carfax.com", "imotors.com",
+    "autotrader.com", "cargurus.com", "carvana.com", "truecar.com", "edmunds.com",
+    "openauto.com",
+)
 
 # Sender domains that are reliably one category regardless of body wording —
 # listing/monitoring platforms don't always say "alert" in the email itself,
 # and newsletter senders don't always say "newsletter".
-_ALERT_DOMAINS = ("realtor.com", "cars.com", "carfax.com", "imotors.com", "ziprecruiter.com", "remotehunter.com")
-_NEWSLETTER_DOMAINS = ("beehiiv.com", "substack.com", "convertkit.com")
+_ALERT_DOMAINS = (
+    "realtor.com", "cars.com", "carfax.com", "imotors.com", "ziprecruiter.com",
+    "remotehunter.com", "autotrader.com", "cargurus.com", "indeed.com",
+    "glassdoor.com",
+)
+_NEWSLETTER_DOMAINS = (
+    "beehiiv.com", "substack.com", "convertkit.com", "kaggle.com",
+    "freecodecamp.org", "medium.com", "bytebytego.com",
+)
+
+# Social and developer platforms: notifications about the user (invites,
+# mentions, profile views, jobs, activity) are alerts; feed posts and
+# article digests are newsletters. Checked before the keyword rules because
+# these mails quote other people's posts, which trip random keywords.
+_SOCIAL_DOMAINS = (
+    "linkedin.com", "facebookmail.com", "x.com", "twitter.com", "instagram.com",
+    "github.com", "gitlab.com", "slack.com", "discord.com",
+)
+_SOCIAL_FEED = re.compile(
+    r"\b(recently posted|reshared|shared a post|posted:|is popular|trending|"
+    r"top (posts|stories)|newsletter|digest|article|edition)\b"
+)
+_SOCIAL_ALERT = re.compile(
+    r"\b(jobs?|hiring|hired|openings?|applied|application|"
+    r"invit(e|ed|ation)s?|you may know|connect(ion)?s?|viewed your|"
+    r"appeared in \d+ searche?s?|mentioned you|tagged you|replied|commented|"
+    r"message|follow(ed|er)s?|notifications?|pull request|issue|review|"
+    r"build|workflow|security)\b"
+)
+
+
+def _matches(domain: str, domains: tuple[str, ...]) -> bool:
+    """em.cars.com matches cars.com; notcars.com does not."""
+    return any(domain == d or domain.endswith("." + d) for d in domains)
+
+
+def _social_category(email: EmailMessage, domain: str) -> str | None:
+    if not _matches(domain, _SOCIAL_DOMAINS):
+        return None
+    subject = email.subject.lower()
+    if _SOCIAL_ALERT.search(subject):
+        return "alert"
+    if _SOCIAL_FEED.search(subject) or _matches(domain, ("linkedin.com",)):
+        # LinkedIn mail that isn't about the user is feed/news content, but
+        # Gmail's Promotions label (sponsored rankings, ads) still wins.
+        if "CATEGORY_PROMOTIONS" in email.labels:
+            return None
+        return "newsletter"
+    return "alert"
 
 
 class RuleClassifier:
@@ -86,22 +208,43 @@ class RuleClassifier:
     name = "rules"
 
     def classify(self, email: EmailMessage) -> tuple[str, float]:
+        blob = f"{email.subject}\n{email.snippet}\n{email.body_text[:2000]}".lower()
+        for category, pattern in _URGENT_RULES:
+            if re.search(pattern, blob):
+                return category, 0.7
+
         # Gmail's own category labels are strong evidence when present.
         if "CATEGORY_PERSONAL" in email.labels:
             return "personal", 0.5
 
-        blob = f"{email.subject}\n{email.snippet}\n{email.body_text[:2000]}".lower()
+        domain = email.sender_domain.lower()
+        social = _social_category(email, domain)
+        if social:
+            return social, 0.6
+
+        # On mail Gmail files as Promotions, bill/subscription words deep in
+        # the body are fine print ("membership is required", "subscription
+        # auto-renews at ..."), so those two only count in subject/preview.
+        promo_tab = "CATEGORY_PROMOTIONS" in email.labels
+        head = f"{email.subject}\n{email.snippet}".lower()
+        listing = _matches(domain, _LISTING_DOMAINS)
         for category, pattern in _RULES:
-            if re.search(pattern, blob):
+            if category == "shipping" and listing:
+                continue
+            text = head if promo_tab and category in ("bill", "subscription") else blob
+            if re.search(pattern, text):
                 return category, 0.7
 
-        domain = email.sender_domain.lower()
-        if any(domain.endswith(d) for d in _ALERT_DOMAINS):
+        if _matches(domain, _ALERT_DOMAINS):
             return "alert", 0.55
-        if any(domain.endswith(d) for d in _NEWSLETTER_DOMAINS):
+        if _matches(domain, _NEWSLETTER_DOMAINS):
             return "newsletter", 0.55
-        if "CATEGORY_PROMOTIONS" in email.labels:
+        if promo_tab:
             return "promotion", 0.6
+
+        for category, pattern in _NOTICE_RULES:
+            if re.search(pattern, blob):
+                return category, 0.5
 
         return "other", 0.3
 

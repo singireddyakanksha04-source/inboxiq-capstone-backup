@@ -23,7 +23,12 @@ def backends():
 def classify(uid: str, backend: str = "rules", limit: int = Query(25, le=200)):
     clf = get_classifier(backend)
     results = []
-    for doc in fs.list_emails(uid, limit=limit):
+    # Newest `limit` plus anything older still waiting for a category — older
+    # mail outside the newest window would otherwise stay uncategorized forever.
+    docs = {d["id"]: d for d in fs.list_emails(uid, limit=limit)}
+    for d in fs.list_emails(uid, limit=500, category="uncategorized"):
+        docs.setdefault(d["id"], d)
+    for doc in docs.values():
         email = EmailMessage(
             **{k: v for k, v in doc.items() if k in EmailMessage.model_fields}
         )

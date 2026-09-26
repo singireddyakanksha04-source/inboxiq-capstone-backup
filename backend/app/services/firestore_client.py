@@ -58,15 +58,48 @@ def _emails(uid: str):
     return db().collection("users").document(uid).collection("emails")
 
 
+# Fields the classifier/extractors fill in after sync. Gmail never has them,
+# so a re-sync sends them as None; on an existing doc that would wipe the
+# stored result. Add any new derived field here. Fields that come from Gmail
+# itself (headers, labels, ...) must NOT be listed — those should refresh.
+DERIVED_FIELDS = frozenset({
+    "category",
+    "confidence",
+    "promo_subcategory",
+    "sub_service",
+    "sub_amount",
+    "sub_cycle",
+    "sub_renewal_hint",
+})
+
+
 def save_emails(uid: str, messages: list[EmailMessage]) -> int:
-    """Batched upsert. Gmail's message id is the doc id, so re-syncing is safe."""
+    """Batched upsert. Gmail's message id is the doc id, so re-syncing is safe.
+
+    New docs are written in full, so category is stored as an explicit None
+    and the "uncategorized" filter in list_emails finds them. Docs that
+    already exist keep their DERIVED_FIELDS unless the message carries a
+    real value for one."""
     written = 0
     for start in range(0, len(messages), 400):  # batch limit is 500 writes
+        chunk = messages[start : start + 400]
+        refs = [_emails(uid).document(msg.id) for msg in chunk]
+        # One round trip for the whole chunk; the field mask keeps it to ids.
+        existing = {
+            snap.id
+            for snap in db().get_all(refs, field_paths=["id"])
+            if snap.exists
+        }
         batch = db().batch()
-        for msg in messages[start : start + 400]:
+        for msg, ref in zip(chunk, refs):
             doc = msg.model_dump(mode="python")
+            if msg.id in existing:
+                doc = {
+                    k: v for k, v in doc.items()
+                    if not (k in DERIVED_FIELDS and v is None)
+                }
             doc["synced_at"] = _now()
-            batch.set(_emails(uid).document(msg.id), doc, merge=True)
+            batch.set(ref, doc, merge=True)
             written += 1
         batch.commit()
     return written
