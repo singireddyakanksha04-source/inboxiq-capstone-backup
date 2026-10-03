@@ -1,3 +1,4 @@
+import { MatchText, matchingSnippet } from "./MatchText.jsx";
 import { categoryMeta } from "../../lib/categories.js";
 import { Icon } from "../../lib/icons.jsx";
 import { toneFor } from "../../lib/tones.js";
@@ -62,7 +63,7 @@ export function dueInfo(email) {
 }
 
 // One row in the message list. Selection is persistent, like Mail.
-export function EmailCard({ email, selected, tabIndex, onFocus, onSelect }) {
+export function EmailCard({ email, selected, tabIndex, onFocus, onSelect, query = "" }) {
   const m = categoryMeta(email.category);
   const name = senderName(email);
   const due = dueInfo(email);
@@ -88,12 +89,12 @@ export function EmailCard({ email, selected, tabIndex, onFocus, onSelect }) {
       </span>
       <span className="message-main">
         <span className="message-top">
-          <span className="message-sender">{name}</span>
+          <span className="message-sender"><MatchText text={name} query={query} /></span>
           <span className="message-date">{shortDate(email.date)}</span>
         </span>
-        <span className="message-subject">{email.subject || "(no subject)"}</span>
+        <span className="message-subject"><MatchText text={email.subject || "(no subject)"} query={query} /></span>
         <span className="message-snippet">
-          {cleanText(email.snippet).replace(/\s+/g, " ").slice(0, 200)}
+          <MatchText text={cleanText(matchingSnippet(email, query)).replace(/\s+/g, " ").slice(0, 200)} query={query} />
         </span>
         <span className="message-tags">
           <span className={`chip tint-${m.tone}`}>
