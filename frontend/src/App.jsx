@@ -6,7 +6,10 @@ import { useAuth } from "./features/auth/useAuth.js";
 import { dueInfo } from "./features/emails/EmailCard.jsx";
 import { EmailList } from "./features/emails/EmailList.jsx";
 import { ReadingPane } from "./features/emails/ReadingPane.jsx";
+import { SearchFilters } from "./features/emails/SearchFilters.jsx";
+import { SearchField } from "./features/emails/SearchField.jsx";
 import { useEmails } from "./features/emails/useEmails.js";
+import { useSearch } from "./features/emails/useSearch.js";
 import { OverviewCards } from "./features/overview/OverviewCards.jsx";
 import { CategorySidebar } from "./features/stats/CategorySidebar.jsx";
 import { SubscriptionsPanel } from "./features/subscriptions/SubscriptionsPanel.jsx";
@@ -26,6 +29,9 @@ export default function App() {
   const [appearance, setAppearance] = useAppearance();
   const [category, setCategory] = useState(null);
   const [status, setStatus] = useState("");
+  const [query, setQuery] = useState("");
+  const [filters, setFilters] = useState({ sender: "", after: "", before: "" });
+  const [searchRevision, setSearchRevision] = useState(0);
   const [selectedId, setSelectedId] = useState(null);
   // Narrow windows show one of list/detail at a time.
   const [showDetail, setShowDetail] = useState(false);
@@ -37,6 +43,8 @@ export default function App() {
   useEffect(() => {
     setCategory(null);
     setStatus("");
+    setQuery("");
+    setFilters({ sender: "", after: "", before: "" });
     setSelectedId(null);
     setShowDetail(false);
   }, [uid]);
@@ -45,6 +53,8 @@ export default function App() {
     authorized ? uid : "",
     category
   );
+  // A search looks inside the chosen mailbox; "All Mail" searches everything.
+  const search = useSearch(authorized ? uid : "", category, query, filters, searchRevision);
   const {
     subs,
     monthlyCost,
@@ -61,6 +71,7 @@ export default function App() {
   }, []);
 
   function onSynced() {
+    setSearchRevision((value) => value + 1);
     reload();
     reloadSubs();
   }
@@ -118,8 +129,10 @@ export default function App() {
   const empty = !synced
     ? "Nothing synced for this account yet. Click Sync to pull your latest mail."
     : "No messages in this mailbox.";
-  const selected = emails.find((m) => m.id === selectedId);
+  const listed = search.active ? search.results : emails;
+  const selected = listed.find((m) => m.id === selectedId);
   const title = category ? categoryMeta(category).label : "All Mail";
+  const quoted = `\u201c${query.trim()}\u201d`;
   // How many this mailbox holds, against the 50 the list loads.
   const upcoming = emails.filter((m) => {
     const due = dueInfo(m);
@@ -142,15 +155,20 @@ export default function App() {
       <header className="toolbar">
         <div className="toolbar-title">
           <h1 className="toolbar-name">{title}</h1>
-          <span className="toolbar-sub">
-            {loading
-              ? "Loading…"
-              : shown > emails.length
-                ? `${emails.length} of ${shown} messages`
-                : `${emails.length} message${emails.length === 1 ? "" : "s"}`}
-            {profile && ` · ${profile.total.toLocaleString()} in Gmail`}
+          <span className="toolbar-sub" aria-live="polite">
+            {search.active
+              ? search.searching
+                ? "Searching…"
+                : `${search.results.length} result${search.results.length === 1 ? "" : "s"}${query.trim() ? ` for ${quoted}` : ""}`
+              : loading
+                ? "Loading…"
+                : shown > emails.length
+                  ? `${emails.length} of ${shown} messages`
+                  : `${emails.length} message${emails.length === 1 ? "" : "s"}`}
+            {!search.active && profile && ` · ${profile.total.toLocaleString()} in Gmail`}
           </span>
         </div>
+        <SearchField value={query} onChange={setQuery} label={`Search ${title}`} />
         <div className="toolbar-actions">
           {/* Always mounted so screen readers announce each sync step. */}
           <span className="status" role="status" aria-live="polite">{status}</span>
@@ -164,13 +182,21 @@ export default function App() {
         </div>
       </header>
 
-      <EmailList emails={emails} title={title} loading={loading} empty={empty}
+      <EmailList emails={listed} title={title}
+        loading={search.active ? search.searching : loading}
+        loadingText={search.active ? "Searching…" : undefined}
+        empty={search.active ? "No emails match these filters. Try a broader search or reset the filters." : empty}
+        query={query}
+        controls={<SearchFilters filters={filters} onChange={setFilters} active={search.active || Boolean(category)}
+          onReset={() => { setQuery(""); setFilters({ sender: "", after: "", before: "" }); pickMailbox(null); }} />}
+        footer={search.active && search.hasMore && <button className="tool-btn search-more"
+          disabled={search.searching} onClick={search.loadMore}>{search.searching ? "Loading…" : "Load more results"}</button>}
         selectedId={selectedId} onSelect={openMessage} />
 
       <section className="pane detail-pane" ref={detailRef}
         aria-label={selected ? "Message" : "Summary"}>
         {selected ? (
-          <ReadingPane key={selected.id} uid={uid} email={selected} onClose={closeMessage} />
+          <ReadingPane key={`${uid}:${selected.id}`} uid={uid} email={selected} onClose={closeMessage} />
         ) : (
           <div className="summary">
             <header className="pane-head summary-bar">
@@ -189,7 +215,7 @@ export default function App() {
         )}
       </section>
 
-      {error && <div className="toast" role="alert">{error}</div>}
+      {(error || search.error) && <div className="toast" role="alert">{error || search.error}</div>}
     </div>
   );
 }
