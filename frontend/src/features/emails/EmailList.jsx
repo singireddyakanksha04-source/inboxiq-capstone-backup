@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { EmailCard } from "./EmailCard.jsx";
 
@@ -20,8 +20,10 @@ function moveFocus(e, selector) {
 // Middle pane: the messages in the chosen mailbox. The list is one Tab stop;
 // Up/Down (and Home/End) move between rows, Enter or click opens one.
 export function EmailList({ emails, title, loading, loadingText = "Loading your mail…", empty,
-  selectedId, onSelect, controls, footer, query = "" }) {
+  selectedId, onSelect, controls, footer, pageKey, query = "" }) {
   const [focusedId, setFocusedId] = useState(null);
+  const scroll = useRef(null);
+  useEffect(() => { if (scroll.current) scroll.current.scrollTop = 0; }, [pageKey]);
 
   // The row Tab lands on: the last one focused, else the open one, else the first.
   const has = (id) => emails.some((m) => m.id === id);
@@ -30,6 +32,7 @@ export function EmailList({ emails, title, loading, loadingText = "Loading your 
   return (
     <section className="pane list-pane" aria-label={title} aria-busy={loading}>
       {controls}
+      <div className="message-scroll" ref={scroll}>
       {emails.length === 0 ? (
         <div className="empty">
           {loading && <span className="spinner" aria-hidden="true" />}
@@ -45,6 +48,7 @@ export function EmailList({ emails, title, loading, loadingText = "Loading your 
           ))}
         </div>
       )}
+      </div>
       {footer}
     </section>
   );

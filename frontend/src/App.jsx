@@ -1,3 +1,5 @@
+import { Pagination } from "./features/emails/Pagination.jsx";
+import { PAGE_SIZE, MAILBOX_WINDOW } from "./features/emails/paging.js";
 import { useEffect, useRef, useState } from "react";
 
 import { AccountMenu } from "./features/auth/AccountMenu.jsx";
@@ -28,11 +30,13 @@ export default function App() {
   const { authorized, email, uid, error: authError, switchAccount, signOut } = useAuth();
   const [appearance, setAppearance] = useAppearance();
   const [category, setCategory] = useState(null);
+  const [promoSubcategory, setPromoSubcategory] = useState("");
   const [status, setStatus] = useState("");
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState({ sender: "", after: "", before: "" });
   const [searchRevision, setSearchRevision] = useState(0);
   const [selectedId, setSelectedId] = useState(null);
+  const [position, setPosition] = useState({ key: null, page: 0 });
   // Narrow windows show one of list/detail at a time.
   const [showDetail, setShowDetail] = useState(false);
   const detailRef = useRef(null);
@@ -42,6 +46,7 @@ export default function App() {
   // New account: start from a clean slate, not the old account's filter/status.
   useEffect(() => {
     setCategory(null);
+    setPromoSubcategory("");
     setStatus("");
     setQuery("");
     setFilters({ sender: "", after: "", before: "" });
@@ -54,7 +59,7 @@ export default function App() {
     category
   );
   // A search looks inside the chosen mailbox; "All Mail" searches everything.
-  const search = useSearch(authorized ? uid : "", category, query, filters, searchRevision);
+  const search = useSearch(authorized ? uid : "", category, query, filters, searchRevision, promoSubcategory);
   const {
     subs,
     monthlyCost,
@@ -78,6 +83,7 @@ export default function App() {
 
   function pickMailbox(c) {
     setCategory(c);
+    setPromoSubcategory("");
     setSelectedId(null);
     setShowDetail(false);
   }
@@ -113,6 +119,22 @@ export default function App() {
     setShowDetail(true);
   }
 
+  const pageKey = JSON.stringify([authorized ? uid : "", category, query.trim(), filters.sender.trim(), filters.after, filters.before, searchRevision, promoSubcategory]);
+  useEffect(() => { setPosition({ key: pageKey, page: 0 }); }, [pageKey]);
+  const pageCount = search.active ? (search.total === null ? null : Math.max(1, Math.ceil(search.total / PAGE_SIZE)))
+    : Math.max(1, Math.ceil(emails.length / PAGE_SIZE));
+  const page = position.key === pageKey ? Math.min(position.page, (pageCount ?? position.page + 1) - 1) : 0;
+  function goToPage(next) {
+    setPosition({ key: pageKey, page: next });
+    setSelectedId(null);
+    setShowDetail(false);
+  }
+  async function nextPage() {
+    const rows = search.active ? search.results : emails;
+    if ((page + 1) * PAGE_SIZE < rows.length) goToPage(page + 1);
+    else if (search.active && await search.loadMore()) goToPage(page + 1);
+  }
+
   if (authorized === null) {
     return <div className="splash"><span className="spinner" aria-hidden="true" /> Checking sign-in…</div>;
   }
@@ -129,11 +151,16 @@ export default function App() {
   const empty = !synced
     ? "Nothing synced for this account yet. Click Sync to pull your latest mail."
     : "No messages in this mailbox.";
-  const listed = search.active ? search.results : emails;
+  const available = search.active ? search.results : emails;
+  const listed = available.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const hasNext = (page + 1) * PAGE_SIZE < available.length || (search.active && search.hasMore);
+  const busy = search.active ? search.searching : loading;
+  const totalPages = pageCount;
+  const range = listed.length ? `${page * PAGE_SIZE + 1}–${page * PAGE_SIZE + listed.length}` : "0";
   const selected = listed.find((m) => m.id === selectedId);
   const title = category ? categoryMeta(category).label : "All Mail";
   const quoted = `\u201c${query.trim()}\u201d`;
-  // How many this mailbox holds, against the 50 the list loads.
+  // Summary counts stay independent from the current 20-message page.
   const upcoming = emails.filter((m) => {
     const due = dueInfo(m);
     return due && due.days >= 0 && due.days <= 14;
@@ -159,12 +186,10 @@ export default function App() {
             {search.active
               ? search.searching
                 ? "Searching…"
-                : `${search.results.length} result${search.results.length === 1 ? "" : "s"}${query.trim() ? ` for ${quoted}` : ""}`
+                : `${range} results${query.trim() ? ` for ${quoted}` : ""}`
               : loading
                 ? "Loading…"
-                : shown > emails.length
-                  ? `${emails.length} of ${shown} messages`
-                  : `${emails.length} message${emails.length === 1 ? "" : "s"}`}
+                : `${range} of ${emails.length}${shown > MAILBOX_WINDOW ? " newest" : ""} synced messages`}
             {!search.active && profile && ` · ${profile.total.toLocaleString()} in Gmail`}
           </span>
         </div>
@@ -182,15 +207,15 @@ export default function App() {
         </div>
       </header>
 
-      <EmailList emails={listed} title={title}
+      <EmailList emails={listed} title={title} pageKey={`${pageKey}:${page}`}
         loading={search.active ? search.searching : loading}
         loadingText={search.active ? "Searching…" : undefined}
         empty={search.active ? "No emails match these filters. Try a broader search or reset the filters." : empty}
         query={query}
-        controls={<SearchFilters filters={filters} onChange={setFilters} active={search.active || Boolean(category)}
+        controls={<SearchFilters promotions={category === "promotion"} subcategory={promoSubcategory} onSubcategoryChange={setPromoSubcategory} filters={filters} onChange={setFilters} active={search.active || Boolean(category)}
           onReset={() => { setQuery(""); setFilters({ sender: "", after: "", before: "" }); pickMailbox(null); }} />}
-        footer={search.active && search.hasMore && <button className="tool-btn search-more"
-          disabled={search.searching} onClick={search.loadMore}>{search.searching ? "Loading…" : "Load more results"}</button>}
+        footer={<Pagination page={page} totalPages={totalPages} hasNext={hasNext} busy={busy}
+          onPrevious={() => goToPage(page - 1)} onNext={nextPage} />}
         selectedId={selectedId} onSelect={openMessage} />
 
       <section className="pane detail-pane" ref={detailRef}

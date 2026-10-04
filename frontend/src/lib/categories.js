@@ -46,3 +46,11 @@ export const CATEGORY_ACTIONS = {
   receipt: "Keep for records",
   promotion: "Skim or unsubscribe",
 };
+
+// Existing stored promotion tags; filtering does not reclassify messages.
+export const PROMOTION_TYPES = [
+  ["shopping", "Shopping"], ["food", "Food"], ["education", "Education"],
+  ["travel", "Travel"], ["groceries", "Groceries"], ["electronics", "Electronics"],
+  ["clothing", "Clothing"], ["entertainment", "Entertainment"], ["finance", "Finance"],
+  ["other", "Other / Unknown"],
+];

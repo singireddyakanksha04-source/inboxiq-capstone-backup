@@ -148,21 +148,33 @@ Open **Search filters** for a sender name/address and inclusive **From date** /
 these filters; **Reset all filters** returns to All Mail and clears the query.
 
 Search checks the newest **500 synced messages in the chosen mailbox**, not the
-entire Gmail inbox. It loads 50 results at a time; **Load more results** continues
-in relevance order, with newest dates and message IDs breaking ties. Sync refreshes
+entire Gmail inbox. Every email-list view shows **20 messages per page** with **Previous**, **Next**
+and **Page N of M**. Search pages keep relevance order, with newest dates and
+message IDs breaking ties. Normal inbox and category pages browse a bounded
+window of the newest 500 synced messages in that mailbox. Filter controls and
+page navigation remain visible while message rows scroll. Sync refreshes
 the current search. Rows show matching text, and opening a message preserves the
 query. Changing account clears search state.
 
 `GET /api/emails/search/page?uid=&q=&sender=&category=&after=&before=&offset=&limit=`
 returns `items`, `next_offset` and `search_window`. `after` and `before` use
 `YYYY-MM-DD`; either can be omitted. Sender/date filters can be used without text.
-Page size is 1–200, and the scan is bounded at 500 messages. The older
+The API accepts page sizes 1–200; the UI uses 20. The response also includes
+`total_matches` for the selected bounded search window. The scan is bounded
+at 500 messages. The older
 `/api/emails/search` list response remains compatible. Paging uses the current
 stored data rather than a historical snapshot; refresh after inbox updates.
 
 The local prototype scopes queries by UID. Production server-side account
 authorization remains a separate backlog item; UID scoping alone is not a
 production authorization boundary. Search does not change Gmail or call a model.
+
+In **Promotions**, **Promotion type** filters existing stored tags such as Shopping,
+Food, Education, Travel and the other supported types. **Other / Unknown** includes
+missing or unrecognized tags. It combines with text, sender and UTC-day filters;
+reset, mailbox and account changes clear it. This reads `promo_subcategory` and
+never reclassifies messages or modifies Gmail labels. The search-page API accepts
+`subcategory` only with `category=promotion`.
 
 ## Search verification
 
