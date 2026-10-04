@@ -133,6 +133,8 @@ def list_emails(uid: str, limit: int = 20, category: str | None = None) -> list[
 # Firestore has no full-text search, so search reads the newest stored mail
 # of the mailbox and matches in Python. Older mail than this is not found.
 SEARCH_WINDOW = 500
+PROMOTION_SUBCATEGORIES = frozenset({"shopping", "food", "education", "travel", "groceries",
+                                    "electronics", "clothing", "entertainment", "finance"})
 
 # from:x / subject:x, a "quoted phrase", or a plain word. A quote left open
 # runs to the end of the query.
@@ -179,17 +181,21 @@ def _search_score(doc: dict, terms: list[tuple[str | None, str]]) -> int | None:
 
 def search_emails(uid: str, query: str, limit: int = 50, category: str | None = None,
                   sender: str = "", after: date | None = None,
-                  before: date | None = None, offset: int = 0) -> list[dict]:
+                  before: date | None = None, offset: int = 0, subcategory: str = "") -> list[dict]:
     """Match within the newest 500 stored messages in the chosen mailbox.
     Date bounds are inclusive UTC days; sender and text constraints are ANDed.
     Subject/sender hits rank above body hits, then date and id break ties.
     """
     terms = _parse_query(query)
     sender = _fold(sender).strip()
-    if not terms and not (sender or after or before):
+    if not terms and not (sender or after or before or subcategory):
         return []
     scored = []
     for doc in list_emails(uid, limit=SEARCH_WINDOW, category=category):
+        if subcategory:
+            tag = str(doc.get("promo_subcategory") or "").strip().lower()
+            if (subcategory == "other" and tag in PROMOTION_SUBCATEGORIES) or (subcategory != "other" and tag != subcategory):
+                continue
         if sender and not any(sender in _fold(doc.get(k)) for k in _FROM_FIELDS):
             continue
         received = doc.get("date")

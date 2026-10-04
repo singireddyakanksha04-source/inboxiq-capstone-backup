@@ -1,52 +1,53 @@
-import { useCallback, useEffect, useState } from "react";
-
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../api/client.js";
+import { MAILBOX_WINDOW } from "./paging.js";
 
-// Owns everything that depends on a uid: the profile line, the counts, the list.
+// Keep a bounded, ordered mailbox window for local pages. Older requests cannot
+// replace a newer mailbox/account or a refresh of the same mailbox.
 export function useEmails(uid, category) {
-  const [profile, setProfile] = useState(null);
-  const [counts, setCounts] = useState({});
-  const [emails, setEmails] = useState([]);
-  const [error, setError] = useState(null);
-  const [loading, setLoading] = useState(false);
-
-  // A different account (or none) must never show the previous account's mail.
-  useEffect(() => {
-    setProfile(null);
-    setCounts({});
-    setError(null);
-  }, [uid]);
-
-  // Switching mailbox clears the rows straight away, so the previous
-  // mailbox's mail is never shown under the new mailbox's title.
-  useEffect(() => {
-    setEmails([]);
-    setLoading(true);
-  }, [uid, category]);
+  const key = JSON.stringify([uid, category]);
+  const current = useRef(key);
+  current.current = key;
+  const requestId = useRef(0);
+  const controller = useRef(null);
+  const [state, setState] = useState({ key: null, uid: null, emails: [], profile: null, counts: {}, error: null, loading: false });
 
   const load = useCallback(async () => {
+    controller.current?.abort();
+    const id = ++requestId.current;
     if (!uid) return;
-    setLoading(true);
+    const abort = new AbortController();
+    controller.current = abort;
+    const options = { signal: abort.signal };
+    const valid = () => current.current === key && requestId.current === id && !abort.signal.aborted;
+    setState((prev) => ({ key, uid, emails: prev.key === key ? prev.emails : [],
+      profile: prev.uid === uid ? prev.profile : null, counts: prev.uid === uid ? prev.counts : {}, error: null, loading: true }));
     try {
-      const [me, stats] = await Promise.all([
-        api("/api/ingest/me").catch(() => null),
-        api(`/api/emails/stats?uid=${uid}`),
+      const [profile, stats] = await Promise.all([
+        api("/api/ingest/me", options).catch(() => null),
+        api(`/api/emails/stats?uid=${encodeURIComponent(uid)}`, options),
       ]);
-      if (me) setProfile(me);
-      setCounts(stats.by_category);
-
-      const q = category ? `&category=${encodeURIComponent(category)}` : "";
-      setEmails(await api(`/api/emails?uid=${uid}&limit=50${q}`));
-      setError(null);
-    } catch (e) {
-      setError(e.message);
+      const params = new URLSearchParams({ uid, limit: MAILBOX_WINDOW });
+      if (category) params.set("category", category);
+      const rows = await api(`/api/emails?${params}`, options);
+      if (valid()) {
+        const seen = new Set();
+        const emails = rows.filter((row) => !seen.has(row.id) && seen.add(row.id));
+        setState({ key, uid, emails, profile, counts: stats.by_category, error: null, loading: false });
+      }
+    } catch (error) {
+      if (valid()) setState((prev) => ({ ...prev, error: error.message, loading: false }));
     }
-    setLoading(false);
-  }, [uid, category]);
+  }, [uid, category, key]);
 
   useEffect(() => {
     load();
+    return () => { controller.current?.abort(); requestId.current++; };
   }, [load]);
 
-  return { profile, counts, emails, error, loading, reload: load };
+  const valid = Boolean(uid) && state.key === key;
+  const sameAccount = Boolean(uid) && state.uid === uid;
+  return { profile: sameAccount ? state.profile : null, counts: sameAccount ? state.counts : {},
+    emails: valid ? state.emails : [], error: valid ? state.error : null,
+    loading: Boolean(uid) && (!valid || state.loading), reload: load };
 }

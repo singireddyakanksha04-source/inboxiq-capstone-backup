@@ -1,7 +1,15 @@
-export function SearchFilters({ filters, onChange, active, onReset }) {
+import { PROMOTION_TYPES } from "../../lib/categories.js";
+
+export function SearchFilters({ filters, onChange, active, onReset, promotions = false, subcategory = "", onSubcategoryChange }) {
   function change(field, value) { onChange({ ...filters, [field]: value }); }
   return (
     <div className="search-tools">
+      {promotions && <label className="promotion-filter">Promotion type
+        <select value={subcategory} onChange={(event) => onSubcategoryChange(event.target.value)}>
+          <option value="">All promotions</option>
+          {PROMOTION_TYPES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        </select>
+      </label>}
       <details className="search-filters" open={Boolean(filters.sender || filters.after || filters.before)}>
         <summary>Search filters</summary>
         <div className="search-filter-fields">

@@ -36,6 +36,7 @@ def search_page(
     uid: Uid,
     q: str = Query("", max_length=500),
     sender: str = Query("", max_length=254),
+    subcategory: str = Query("", pattern=r"^(shopping|food|education|travel|groceries|electronics|clothing|entertainment|finance|other)?$"),
     category: str | None = None,
     after: date | None = None,
     before: date | None = None,
@@ -43,12 +44,15 @@ def search_page(
     limit: int = Query(50, ge=1, le=200),
 ):
     """Bounded read-only search, with filter-only queries and further pages."""
+    if subcategory and category != "promotion":
+        raise HTTPException(422, "Promotion type requires the Promotions mailbox")
     if after and before and after > before:
         raise HTTPException(422, "From date must be on or before To date")
-    rows = fs.search_emails(uid, q.strip(), limit=limit + 1, category=category,
-                            sender=sender, after=after, before=before, offset=offset)
-    return {"items": rows[:limit],
-            "next_offset": offset + limit if len(rows) > limit else None,
+    rows = fs.search_emails(uid, q.strip(), limit=fs.SEARCH_WINDOW, category=category,
+                            sender=sender, after=after, before=before, subcategory=subcategory)
+    return {"items": rows[offset:offset + limit],
+            "next_offset": offset + limit if offset + limit < len(rows) else None,
+            "total_matches": len(rows),
             "search_window": fs.SEARCH_WINDOW}
 
 
