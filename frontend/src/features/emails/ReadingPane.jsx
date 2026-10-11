@@ -16,8 +16,14 @@ function longDate(iso) {
 
 // Marketing mail leaves empty [] markers where images and buttons were, and
 // stacks blank lines between them. Drop both so the text reads as prose.
+// Some senders put raw HTML in the plain-text part ("<span ...>", "&amp;").
+// Drop the tags, keep their text, and decode the common entities.
+const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", "#39": "'" };
+
 function readable(text) {
   return cleanText(text)
+    .replace(/<\/?[a-z][^<>]*>/gi, "")
+    .replace(/&(amp|lt|gt|quot|apos|nbsp|#39);/g, (_, e) => ENTITIES[e])
     .replace(/^[ \t]*(\[\s*\][ \t]*)+$/gm, "")
     .replace(/\[\s*\]/g, "")
     .replace(/\n{3,}/g, "\n\n")

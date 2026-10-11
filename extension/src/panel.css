@@ -1,0 +1,281 @@
+/* The panel lives inside Gmail's own left navigation, under Labels, so it
+   borrows Gmail's width and spacing and only brings its own colour tiles. */
+.iq-panel {
+  --iq-red: #ff3b30;
+  --iq-orange: #ff9500;
+  --iq-yellow: #f0b400;
+  --iq-green: #34c759;
+  --iq-teal: #30b0c7;
+  --iq-blue: #007aff;
+  --iq-indigo: #5856d6;
+  --iq-purple: #af52de;
+  --iq-pink: #ff2d55;
+  --iq-gray: #8e8e93;
+  --iq-label-2: #5f6368;
+  --iq-label-3: #80868b;
+  --iq-hover: rgba(32, 33, 36, 0.06);
+  --iq-selected: rgba(0, 122, 255, 0.12);
+  --iq-separator: rgba(32, 33, 36, 0.12);
+
+  --iq-ink: #202124;
+
+  margin: 12px 8px 24px 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--iq-separator);
+  font-family: "Google Sans", Roboto, Arial, sans-serif;
+  color: #202124;
+}
+
+/* `color` is not the whole story: -webkit-text-fill-color is inherited too,
+   it wins over `color` when painting, and it crosses into the shadow tree
+   from the host page - which is what washed the mailbox names out in Gmail.
+   Tying it to currentColor makes every line paint its own colour. */
+.iq-panel,
+.iq-panel * {
+  -webkit-text-fill-color: currentColor;
+}
+
+/* Gmail keeps its own theme and ignores the system one, so dark styling is
+   switched on by the class content.js sets after measuring the sidebar - not
+   by prefers-color-scheme, which painted near-white text on light Gmail. */
+.iq-panel.iq-dark {
+  --iq-ink: #e8eaed;
+  --iq-label-2: #9aa0a6;
+  --iq-label-3: #9aa0a6;
+  --iq-hover: rgba(232, 234, 237, 0.08);
+  --iq-selected: rgba(10, 132, 255, 0.22);
+  --iq-separator: rgba(232, 234, 237, 0.16);
+  color: #e8eaed;
+}
+
+.iq-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 6px 18px;
+}
+.iq-title {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #0b57d0;
+}
+.iq-panel.iq-dark .iq-title { color: #8ab4f8; }
+.iq-ghost {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--iq-label-2);
+  cursor: pointer;
+}
+.iq-ghost:hover { background: var(--iq-hover); }
+.iq-ghost[disabled] { opacity: 0.5; cursor: default; }
+.iq-spin { animation: iq-spin 1s linear infinite; }
+@keyframes iq-spin { to { transform: rotate(360deg); } }
+
+.iq-note {
+  padding: 2px 10px 8px 18px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--iq-label-3);
+}
+.iq-note.iq-error { color: var(--iq-red); }
+
+.iq-connect {
+  margin: 0 10px 8px 18px;
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: #0b57d0;
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.iq-connect:hover { background: #0a4fba; }
+
+.iq-group {
+  padding: 12px 10px 4px 18px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--iq-label-3);
+}
+
+.iq-list { display: flex; flex-direction: column; gap: 1px; }
+
+.iq-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 30px;
+  padding: 0 10px 0 16px;
+  border: 0;
+  border-radius: 0 16px 16px 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.iq-item:hover { background: var(--iq-hover); }
+.iq-item:focus-visible { outline: 2px solid #0b57d0; outline-offset: -2px; }
+.iq-item.on { background: var(--iq-selected); font-weight: 600; }
+.iq-item:hover .iq-count.iq-pill {
+  background: color-mix(in srgb, var(--tone) 26%, transparent);
+}
+
+.iq-tile {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: var(--tone);
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(32, 33, 36, 0.18);
+}
+/* One class per category colour, carried as --tone so the tile, the badge
+   and the soft count pill all read from the same value. */
+.iq-tone-red { --tone: var(--iq-red); }
+.iq-tone-orange { --tone: var(--iq-orange); }
+.iq-tone-yellow { --tone: var(--iq-yellow); }
+.iq-tone-green { --tone: var(--iq-green); }
+.iq-tone-teal { --tone: var(--iq-teal); }
+.iq-tone-blue { --tone: var(--iq-blue); }
+.iq-tone-indigo { --tone: var(--iq-indigo); }
+.iq-tone-purple { --tone: var(--iq-purple); }
+.iq-tone-pink { --tone: var(--iq-pink); }
+.iq-tone-gray { --tone: var(--iq-gray); }
+
+.iq-label {
+  flex: 1;
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iq-count {
+  display: grid;
+  place-items: center;
+  min-width: 22px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+/* Needs-attention mailboxes carry their colour solid; the rest get the same
+   colour as a tint, so the list reads as one family rather than ten alerts. */
+.iq-count.iq-badge {
+  background: var(--tone);
+  color: #fff;
+}
+.iq-count.iq-pill {
+  background: color-mix(in srgb, var(--tone) 16%, transparent);
+  color: color-mix(in srgb, var(--tone) 70%, var(--iq-ink));
+}
+
+/* category detail: the messages InboxIQ put in one mailbox */
+
+.iq-back {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 2px 10px 6px 14px;
+  border: 0;
+  background: none;
+  color: var(--iq-label-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.iq-back:hover { color: inherit; }
+
+.iq-action {
+  padding: 0 10px 6px 18px;
+  font-size: 11px;
+  color: var(--iq-label-3);
+}
+
+.iq-msg {
+  display: block;
+  width: 100%;
+  padding: 6px 10px 6px 18px;
+  border: 0;
+  border-radius: 0 16px 16px 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.iq-msg:hover { background: var(--iq-hover); }
+.iq-from {
+  display: flex;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.iq-from-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iq-date { flex-shrink: 0; font-weight: 400; color: var(--iq-label-3); }
+.iq-subject {
+  font-size: 12px;
+  color: var(--iq-label-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.iq-due { font-size: 11px; font-weight: 600; color: var(--iq-orange); }
+
+.iq-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* In Gmail the panel fills a shadow-root host that content.js positions over
+   the empty strip under Labels; the host carries the fixed placement, this
+   carries the look. */
+.iq-panel.iq-anchored {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  margin: 0;
+  padding: 8px 0 12px;
+  background: transparent;
+}
+
+/* Toolbar popup: the same view, given its own width and a solid background
+   because it is not sitting on Gmail's sidebar. */
+.iq-panel.iq-popup {
+  width: 300px;
+  max-height: 520px;
+  overflow-y: auto;
+  padding: 12px 0 14px;
+  background: #ffffff;
+}
+body {
+  margin: 0;
+}
+.iq-panel.iq-popup.iq-dark { background: #1f1f1f; }

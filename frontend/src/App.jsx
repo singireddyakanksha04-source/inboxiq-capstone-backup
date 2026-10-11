@@ -1,3 +1,5 @@
+import { Pagination } from "./features/emails/Pagination.jsx";
+import { PAGE_SIZE, MAILBOX_WINDOW } from "./features/emails/paging.js";
 import { useEffect, useRef, useState } from "react";
 
 import { AccountMenu } from "./features/auth/AccountMenu.jsx";
@@ -6,7 +8,10 @@ import { useAuth } from "./features/auth/useAuth.js";
 import { dueInfo } from "./features/emails/EmailCard.jsx";
 import { EmailList } from "./features/emails/EmailList.jsx";
 import { ReadingPane } from "./features/emails/ReadingPane.jsx";
+import { SearchFilters } from "./features/emails/SearchFilters.jsx";
+import { SearchField } from "./features/emails/SearchField.jsx";
 import { useEmails } from "./features/emails/useEmails.js";
+import { useSearch } from "./features/emails/useSearch.js";
 import { OverviewCards } from "./features/overview/OverviewCards.jsx";
 import { CategorySidebar } from "./features/stats/CategorySidebar.jsx";
 import { SubscriptionsPanel } from "./features/subscriptions/SubscriptionsPanel.jsx";
@@ -25,8 +30,13 @@ export default function App() {
   const { authorized, email, uid, error: authError, switchAccount, signOut } = useAuth();
   const [appearance, setAppearance] = useAppearance();
   const [category, setCategory] = useState(null);
+  const [promoSubcategory, setPromoSubcategory] = useState("");
   const [status, setStatus] = useState("");
+  const [query, setQuery] = useState("");
+  const [filters, setFilters] = useState({ sender: "", after: "", before: "" });
+  const [searchRevision, setSearchRevision] = useState(0);
   const [selectedId, setSelectedId] = useState(null);
+  const [position, setPosition] = useState({ key: null, page: 0 });
   // Narrow windows show one of list/detail at a time.
   const [showDetail, setShowDetail] = useState(false);
   const detailRef = useRef(null);
@@ -36,7 +46,10 @@ export default function App() {
   // New account: start from a clean slate, not the old account's filter/status.
   useEffect(() => {
     setCategory(null);
+    setPromoSubcategory("");
     setStatus("");
+    setQuery("");
+    setFilters({ sender: "", after: "", before: "" });
     setSelectedId(null);
     setShowDetail(false);
   }, [uid]);
@@ -45,6 +58,8 @@ export default function App() {
     authorized ? uid : "",
     category
   );
+  // A search looks inside the chosen mailbox; "All Mail" searches everything.
+  const search = useSearch(authorized ? uid : "", category, query, filters, searchRevision, promoSubcategory);
   const {
     subs,
     monthlyCost,
@@ -61,12 +76,14 @@ export default function App() {
   }, []);
 
   function onSynced() {
+    setSearchRevision((value) => value + 1);
     reload();
     reloadSubs();
   }
 
   function pickMailbox(c) {
     setCategory(c);
+    setPromoSubcategory("");
     setSelectedId(null);
     setShowDetail(false);
   }
@@ -102,6 +119,22 @@ export default function App() {
     setShowDetail(true);
   }
 
+  const pageKey = JSON.stringify([authorized ? uid : "", category, query.trim(), filters.sender.trim(), filters.after, filters.before, searchRevision, promoSubcategory]);
+  useEffect(() => { setPosition({ key: pageKey, page: 0 }); }, [pageKey]);
+  const pageCount = search.active ? (search.total === null ? null : Math.max(1, Math.ceil(search.total / PAGE_SIZE)))
+    : Math.max(1, Math.ceil(emails.length / PAGE_SIZE));
+  const page = position.key === pageKey ? Math.min(position.page, (pageCount ?? position.page + 1) - 1) : 0;
+  function goToPage(next) {
+    setPosition({ key: pageKey, page: next });
+    setSelectedId(null);
+    setShowDetail(false);
+  }
+  async function nextPage() {
+    const rows = search.active ? search.results : emails;
+    if ((page + 1) * PAGE_SIZE < rows.length) goToPage(page + 1);
+    else if (search.active && await search.loadMore()) goToPage(page + 1);
+  }
+
   if (authorized === null) {
     return <div className="splash"><span className="spinner" aria-hidden="true" /> Checking sign-in…</div>;
   }
@@ -118,9 +151,16 @@ export default function App() {
   const empty = !synced
     ? "Nothing synced for this account yet. Click Sync to pull your latest mail."
     : "No messages in this mailbox.";
-  const selected = emails.find((m) => m.id === selectedId);
+  const available = search.active ? search.results : emails;
+  const listed = available.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const hasNext = (page + 1) * PAGE_SIZE < available.length || (search.active && search.hasMore);
+  const busy = search.active ? search.searching : loading;
+  const totalPages = pageCount;
+  const range = listed.length ? `${page * PAGE_SIZE + 1}–${page * PAGE_SIZE + listed.length}` : "0";
+  const selected = listed.find((m) => m.id === selectedId);
   const title = category ? categoryMeta(category).label : "All Mail";
-  // How many this mailbox holds, against the 50 the list loads.
+  const quoted = `\u201c${query.trim()}\u201d`;
+  // Summary counts stay independent from the current 20-message page.
   const upcoming = emails.filter((m) => {
     const due = dueInfo(m);
     return due && due.days >= 0 && due.days <= 14;
@@ -142,15 +182,18 @@ export default function App() {
       <header className="toolbar">
         <div className="toolbar-title">
           <h1 className="toolbar-name">{title}</h1>
-          <span className="toolbar-sub">
-            {loading
-              ? "Loading…"
-              : shown > emails.length
-                ? `${emails.length} of ${shown} messages`
-                : `${emails.length} message${emails.length === 1 ? "" : "s"}`}
-            {profile && ` · ${profile.total.toLocaleString()} in Gmail`}
+          <span className="toolbar-sub" aria-live="polite">
+            {search.active
+              ? search.searching
+                ? "Searching…"
+                : `${range} results${query.trim() ? ` for ${quoted}` : ""}`
+              : loading
+                ? "Loading…"
+                : `${range} of ${emails.length}${shown > MAILBOX_WINDOW ? " newest" : ""} synced messages`}
+            {!search.active && profile && ` · ${profile.total.toLocaleString()} in Gmail`}
           </span>
         </div>
+        <SearchField value={query} onChange={setQuery} label={`Search ${title}`} />
         <div className="toolbar-actions">
           {/* Always mounted so screen readers announce each sync step. */}
           <span className="status" role="status" aria-live="polite">{status}</span>
@@ -164,13 +207,21 @@ export default function App() {
         </div>
       </header>
 
-      <EmailList emails={emails} title={title} loading={loading} empty={empty}
+      <EmailList emails={listed} title={title} pageKey={`${pageKey}:${page}`}
+        loading={search.active ? search.searching : loading}
+        loadingText={search.active ? "Searching…" : undefined}
+        empty={search.active ? "No emails match these filters. Try a broader search or reset the filters." : empty}
+        query={query}
+        controls={<SearchFilters promotions={category === "promotion"} subcategory={promoSubcategory} onSubcategoryChange={setPromoSubcategory} filters={filters} onChange={setFilters} active={search.active || Boolean(category)}
+          onReset={() => { setQuery(""); setFilters({ sender: "", after: "", before: "" }); pickMailbox(null); }} />}
+        footer={<Pagination page={page} totalPages={totalPages} hasNext={hasNext} busy={busy}
+          onPrevious={() => goToPage(page - 1)} onNext={nextPage} />}
         selectedId={selectedId} onSelect={openMessage} />
 
       <section className="pane detail-pane" ref={detailRef}
         aria-label={selected ? "Message" : "Summary"}>
         {selected ? (
-          <ReadingPane key={selected.id} uid={uid} email={selected} onClose={closeMessage} />
+          <ReadingPane key={`${uid}:${selected.id}`} uid={uid} email={selected} onClose={closeMessage} />
         ) : (
           <div className="summary">
             <header className="pane-head summary-bar">
@@ -189,7 +240,7 @@ export default function App() {
         )}
       </section>
 
-      {error && <div className="toast" role="alert">{error}</div>}
+      {(error || search.error) && <div className="toast" role="alert">{error || search.error}</div>}
     </div>
   );
 }

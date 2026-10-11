@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { EmailCard } from "./EmailCard.jsx";
 
@@ -19,8 +19,11 @@ function moveFocus(e, selector) {
 
 // Middle pane: the messages in the chosen mailbox. The list is one Tab stop;
 // Up/Down (and Home/End) move between rows, Enter or click opens one.
-export function EmailList({ emails, title, loading, empty, selectedId, onSelect }) {
+export function EmailList({ emails, title, loading, loadingText = "Loading your mail…", empty,
+  selectedId, onSelect, controls, footer, pageKey, query = "" }) {
   const [focusedId, setFocusedId] = useState(null);
+  const scroll = useRef(null);
+  useEffect(() => { if (scroll.current) scroll.current.scrollTop = 0; }, [pageKey]);
 
   // The row Tab lands on: the last one focused, else the open one, else the first.
   const has = (id) => emails.some((m) => m.id === id);
@@ -28,10 +31,12 @@ export function EmailList({ emails, title, loading, empty, selectedId, onSelect 
 
   return (
     <section className="pane list-pane" aria-label={title} aria-busy={loading}>
+      {controls}
+      <div className="message-scroll" ref={scroll}>
       {emails.length === 0 ? (
         <div className="empty">
           {loading && <span className="spinner" aria-hidden="true" />}
-          <p>{loading ? "Loading your mail…" : empty}</p>
+          <p>{loading ? loadingText : empty}</p>
         </div>
       ) : (
         <div className="messages" role="listbox" aria-label={title}
@@ -39,10 +44,12 @@ export function EmailList({ emails, title, loading, empty, selectedId, onSelect 
           {emails.map((email) => (
             <EmailCard key={email.id} email={email} selected={email.id === selectedId}
               tabIndex={email.id === tabId ? 0 : -1}
-              onFocus={() => setFocusedId(email.id)} onSelect={onSelect} />
+              onFocus={() => setFocusedId(email.id)} onSelect={onSelect} query={query} />
           ))}
         </div>
       )}
+      </div>
+      {footer}
     </section>
   );
 }

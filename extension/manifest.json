@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "InboxIQ for Gmail",
+  "version": "0.1.6",
+  "description": "Sorts the Gmail inbox into InboxIQ mailboxes - bills, codes, security, promotions and the rest - inside Gmail's own sidebar.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "InboxIQ"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArSRkoREZYLEljWdOZ5SLUQzKoe1CqywWmEPaBHLqJiSSW+ANgzG5P4c8RsAF6kD0odwq+uQLixpKh4uFXRgjsubYjilBNhb/jx0J+tEC8mbMBMnKfou7arg+WmFmqUiPZyhIYT2XaTePLjErMHlywqIDgkxxxn5ftyWIl1uLFigDjQVm9VhpcM/98KEQ983TKZIYooiXWe1c4G/T3i/18Ja/pTbbo0BQWa8+qC/azg90KYT5InrdvhcghnwgDZAv3XHL1lX1oZ42zDPd4P2cX3ySPDNejTIaAcAntk5qy2XWSpQa0krdmwLrRalSMwSSmsJ1ogoGnSyRSeeYr4DOzwIDAQAB",
+  "permissions": [
+    "identity",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://gmail.googleapis.com/"
+  ],
+  "oauth2": {
+    "client_id": "948915820665-oa6t4i8biv1l6mh1ollrm36u3k29cp3k.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/gmail.readonly"
+    ]
+  },
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://mail.google.com/*"
+      ],
+      "js": [
+        "src/categories.js",
+        "src/panel.js",
+        "src/content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/panel.css"
+      ],
+      "matches": [
+        "https://mail.google.com/*"
+      ]
+    }
+  ]
+}
