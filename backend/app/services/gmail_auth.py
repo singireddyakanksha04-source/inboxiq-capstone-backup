@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow, InstalledAppFlow
@@ -29,6 +30,11 @@ from app.core.config import get_settings
 # state -> account, so the callback knows whose token it is holding. In-memory is
 # fine while the API is a single local process.
 _pending: dict[str, str] = {}
+
+
+class NotSignedIn(PermissionError):
+    """No usable token for the account: never signed in, signed out, or
+    Google revoked it. Web routes answer 401 so the dashboard shows sign-in."""
 
 
 def _token_path(account: str) -> Path:
@@ -59,11 +65,17 @@ def load_credentials(account: str) -> Credentials | None:
         return None
 
     settings = get_settings()
-    creds = Credentials.from_authorized_user_file(str(path), settings.gmail_scopes)
+    try:
+        creds = Credentials.from_authorized_user_file(str(path), settings.gmail_scopes)
+    except ValueError:  # unreadable or incomplete token file
+        return None
     if creds.valid:
         return creds
     if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+        try:
+            creds.refresh(Request())
+        except RefreshError:  # revoked or expired for good; sign in again
+            return None
         _save(account, creds)
         return creds
     return None
@@ -131,8 +143,12 @@ def login(account: str = "default") -> Credentials:
 
 
 def gmail_service(account: str = "default"):
-    """Authenticated Gmail API client."""
-    return build("gmail", "v1", credentials=login(account), cache_discovery=False)
+    """Authenticated Gmail API client. Never starts a consent flow: the web app
+    signs in through /api/auth/login, and scripts call login() first."""
+    creds = load_credentials(account)
+    if creds is None:
+        raise NotSignedIn(f"Not signed in to Gmail ({account}). Sign in again.")
+    return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
 
 def logout(account: str = "default") -> bool:

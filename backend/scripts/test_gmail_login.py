@@ -2,6 +2,7 @@
 import _bootstrap  # noqa: F401
 import argparse
 
+from app.services.gmail_auth import login
 from app.services.gmail_client import fetch_messages, get_profile
 
 
@@ -12,6 +13,7 @@ def main() -> None:
     ap.add_argument("--account", default="default")
     args = ap.parse_args()
 
+    login(args.account)  # opens the browser consent page if there is no token yet
     profile = get_profile(args.account)
     print(f"\nlogged in as : {profile['emailAddress']}")
     print(f"total messages: {profile['messagesTotal']}\n")

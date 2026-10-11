@@ -2,6 +2,9 @@
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import RedirectResponse
+from google.auth.exceptions import RefreshError
+from googleapiclient.errors import HttpError
+from oauthlib.oauth2.rfc6749.errors import OAuth2Error
 
 from app.core.config import get_settings
 from app.services import firestore_client as fs
@@ -15,9 +18,17 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 def status(account: str = "default"):
     """Who is signed in right now. The dashboard keys all its data off `uid`,
     so a new sign-in with a different Google account switches the view."""
-    if not gmail_auth.is_authorized(account):
-        return {"account": account, "authorized": False, "email": None, "uid": None}
-    email = get_profile(account)["emailAddress"]
+    signed_out = {"account": account, "authorized": False, "email": None, "uid": None}
+    try:
+        if not gmail_auth.is_authorized(account):
+            return signed_out
+        email = get_profile(account)["emailAddress"]
+    except (RefreshError, gmail_auth.NotSignedIn):
+        return signed_out  # token revoked or removed since the last check
+    except HttpError as exc:
+        if exc.resp.status == 401:
+            return signed_out
+        raise
     return {"account": account, "authorized": True, "email": email, "uid": fs.make_uid(email)}
 
 
@@ -43,10 +54,12 @@ def callback(
     if not code or not state:
         raise HTTPException(400, "missing code or state")
     try:
-        gmail_auth.exchange_code(code, state)
+        account = gmail_auth.exchange_code(code, state)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    # back to the dashboard, which re-checks /api/auth/status
+    except OAuth2Error as exc:  # code already used or expired
+        raise HTTPException(400, "Google sign-in expired. Please sign in again.") from exc
+    get_profile(account)
     return RedirectResponse(f"{get_settings().frontend_url}/?signed_in=1")
 
 

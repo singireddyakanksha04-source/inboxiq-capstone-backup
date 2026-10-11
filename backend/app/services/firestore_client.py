@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+import unicodedata
+from datetime import date, datetime, timezone
 from functools import lru_cache
 
 from google.cloud import firestore
@@ -20,9 +21,14 @@ def db() -> firestore.Client:
     )
 
 
+# What make_uid produces. Routes reject anything else before it reaches a
+# Firestore path, so "a/b" or "" can never address another document.
+UID_PATTERN = r"^[a-z0-9_]{1,254}$"
+
+
 def make_uid(email: str) -> str:
     """Stable doc id from an address until real Firebase Auth uids exist."""
-    return re.sub(r"[^a-z0-9_]", "_", email.lower())
+    return re.sub(r"[^a-z0-9_]", "_", email.strip().lower())
 
 
 def _now() -> datetime:
@@ -122,6 +128,98 @@ def list_emails(uid: str, limit: int = 20, category: str | None = None) -> list[
         q = q.where(filter=firestore.FieldFilter("category", "==", category))
     q = q.order_by("date", direction=firestore.Query.DESCENDING).limit(limit)
     return [d.to_dict() for d in q.stream()]
+
+
+# ---------------------------------------------------------------- search
+
+# Firestore has no full-text search, so search reads the newest stored mail
+# of the mailbox and matches in Python. Older mail than this is not found.
+SEARCH_WINDOW = 500
+PROMOTION_SUBCATEGORIES = frozenset({"shopping", "food", "education", "travel", "groceries",
+                                    "electronics", "clothing", "entertainment", "finance"})
+
+# from:x / subject:x, a "quoted phrase", or a plain word. A quote left open
+# runs to the end of the query.
+_TOKEN_RE = re.compile(r'(?:(from|subject):)?(?:"([^"]*)"?|(\S+))', re.I)
+_HEADER_FIELDS = ("subject", "sender", "sender_email", "sender_domain")
+_FROM_FIELDS = ("sender", "sender_email", "sender_domain")
+
+
+def _fold(text) -> str:
+    """Lower-case and drop accents, so 'CAFÉ' and 'cafe' compare equal."""
+    text = unicodedata.normalize("NFKD", str(text or "")).casefold()
+    return "".join(ch for ch in text if not unicodedata.combining(ch))
+
+
+def _parse_query(query: str) -> list[tuple[str | None, str]]:
+    """(operator or None, folded needle) for each term; empty terms dropped."""
+    terms = []
+    for m in _TOKEN_RE.finditer(query or ""):
+        op = m.group(1).lower() if m.group(1) else None
+        needle = _fold(m.group(2) if m.group(2) is not None else m.group(3)).strip()
+        if needle:
+            terms.append((op, needle))
+    return terms
+
+
+def _search_score(doc: dict, terms: list[tuple[str | None, str]]) -> int | None:
+    """None if any term misses, else how many terms hit subject/sender."""
+    fields = {k: _fold(doc.get(k)) for k in _HEADER_FIELDS + ("snippet", "body_text")}
+    score = 0
+    for op, needle in terms:
+        if op == "from":
+            where = _FROM_FIELDS
+        elif op == "subject":
+            where = ("subject",)
+        else:
+            where = _HEADER_FIELDS + ("snippet", "body_text")
+        hits = [k for k in where if needle in fields[k]]
+        if not hits:
+            return None
+        if any(k in _HEADER_FIELDS for k in hits):
+            score += 1
+    return score
+
+
+def search_emails(uid: str, query: str, limit: int = 50, category: str | None = None,
+                  sender: str = "", after: date | None = None,
+                  before: date | None = None, offset: int = 0, subcategory: str = "") -> list[dict]:
+    """Match within the newest 500 stored messages in the chosen mailbox.
+    Date bounds are inclusive UTC days; sender and text constraints are ANDed.
+    Subject/sender hits rank above body hits, then date and id break ties.
+    """
+    terms = _parse_query(query)
+    sender = _fold(sender).strip()
+    if not terms and not (sender or after or before or subcategory):
+        return []
+    scored = []
+    for doc in list_emails(uid, limit=SEARCH_WINDOW, category=category):
+        if subcategory:
+            tag = str(doc.get("promo_subcategory") or "").strip().lower()
+            if (subcategory == "other" and tag in PROMOTION_SUBCATEGORIES) or (subcategory != "other" and tag != subcategory):
+                continue
+        if sender and not any(sender in _fold(doc.get(k)) for k in _FROM_FIELDS):
+            continue
+        received = doc.get("date")
+        if isinstance(received, str):
+            try:
+                received = datetime.fromisoformat(received.replace("Z", "+00:00"))
+            except ValueError:
+                received = None
+        if isinstance(received, datetime):
+            if received.tzinfo is None:
+                received = received.replace(tzinfo=timezone.utc)
+            received = received.astimezone(timezone.utc)
+        else:
+            received = None
+        day = received.date() if received else None
+        if (after or before) and (day is None or (after and day < after) or (before and day > before)):
+            continue
+        score = _search_score(doc, terms)
+        if score is not None:
+            scored.append((score, received.timestamp() if received else 0, str(doc.get("id", "")), doc))
+    scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    return [item[3] for item in scored[offset:offset + limit]]
 
 
 def set_category(uid: str, message_id: str, category: str, confidence: float) -> None:

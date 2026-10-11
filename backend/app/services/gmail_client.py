@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import base64
 import re
+import time
+from datetime import timezone
 from email.utils import parsedate_to_datetime, parseaddr
 from html import unescape
+
+from googleapiclient.errors import HttpError
 
 from app.models.email import EmailMessage
 from app.services.gmail_auth import gmail_service
@@ -16,7 +20,8 @@ def _headers(payload: dict) -> dict[str, str]:
 
 
 def _decode(data: str) -> str:
-    return base64.urlsafe_b64decode(data.encode()).decode("utf-8", errors="replace")
+    padded = data + "=" * (-len(data) % 4)  # Gmail sometimes drops the padding
+    return base64.urlsafe_b64decode(padded.encode()).decode("utf-8", errors="replace")
 
 
 def _html_to_text(html: str) -> str:
@@ -79,6 +84,8 @@ def parse_message(raw: dict) -> EmailMessage:
 
     sender = head.get("from", "")
     _, addr = parseaddr(sender)
+    if "@" not in addr:  # e.g. "undisclosed-recipients"
+        addr = ""
 
     date = None
     if head.get("date"):
@@ -86,13 +93,17 @@ def parse_message(raw: dict) -> EmailMessage:
             date = parsedate_to_datetime(head["date"])
         except (TypeError, ValueError):
             date = None
+    # "-0000" or no zone parses naive; treat it as UTC so every stored date
+    # compares with the aware ones.
+    if date is not None and date.tzinfo is None:
+        date = date.replace(tzinfo=timezone.utc)
 
     return EmailMessage(
         id=raw["id"],
         thread_id=raw.get("threadId", ""),
         sender=sender,
         sender_email=addr,
-        sender_domain=addr.split("@")[-1].lower() if "@" in addr else "",
+        sender_domain=addr.split("@")[-1].lower() if addr else "",
         to=head.get("to", ""),
         subject=head.get("subject", ""),
         date=date,
@@ -107,27 +118,49 @@ def get_profile(account: str = "default") -> dict:
     return gmail_service(account).users().getProfile(userId="me").execute()
 
 
+# Gmail answers 429, or 403 with a rate-limit reason, when too many requests
+# arrive in a short burst. Those clear within seconds, so back off and retry.
+_RATE_LIMIT_REASONS = {"ratelimitexceeded", "userratelimitexceeded", "quotaexceeded"}
+_RETRY_DELAYS = (1, 2, 4, 8)
+
+
+def is_rate_limited(err: HttpError) -> bool:
+    if err.resp.status == 429:
+        return True
+    if err.resp.status != 403:
+        return False
+    reasons = {str(d.get("reason", "")).lower() for d in (err.error_details or []) if isinstance(d, dict)}
+    return bool(reasons & _RATE_LIMIT_REASONS)
+
+
+def _execute(request):
+    for delay in _RETRY_DELAYS:
+        try:
+            return request.execute()
+        except HttpError as err:
+            if not is_rate_limited(err):
+                raise
+            time.sleep(delay)
+    return request.execute()
+
+
 def fetch_messages(
     max_results: int = 10,
     query: str = "in:inbox",
     account: str = "default",
+    skip: frozenset[str] | set[str] = frozenset(),
 ) -> list[EmailMessage]:
-    """`query` uses Gmail search syntax, e.g. 'category:promotions newer_than:30d'."""
+    """`query` uses Gmail search syntax, e.g. 'category:promotions newer_than:30d'.
+    Ids in `skip` are listed but not downloaded (already fetched elsewhere)."""
     svc = gmail_service(account)
-    listing = (
-        svc.users()
-        .messages()
-        .list(userId="me", q=query, maxResults=max_results)
-        .execute()
+    listing = _execute(
+        svc.users().messages().list(userId="me", q=query, maxResults=max_results)
     )
 
     out = []
     for stub in listing.get("messages", []):
-        raw = (
-            svc.users()
-            .messages()
-            .get(userId="me", id=stub["id"], format="full")
-            .execute()
-        )
+        if stub["id"] in skip:
+            continue
+        raw = _execute(svc.users().messages().get(userId="me", id=stub["id"], format="full"))
         out.append(parse_message(raw))
     return out

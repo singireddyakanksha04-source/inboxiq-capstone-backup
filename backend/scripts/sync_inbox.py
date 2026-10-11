@@ -3,6 +3,7 @@ import _bootstrap  # noqa: F401
 import argparse
 
 from app.services import firestore_client as fs
+from app.services.gmail_auth import login
 from app.services.gmail_client import fetch_messages, get_profile
 
 
@@ -13,6 +14,7 @@ def main() -> None:
     ap.add_argument("--account", default="default")
     args = ap.parse_args()
 
+    login(args.account)  # opens the browser consent page if there is no token yet
     address = get_profile(args.account)["emailAddress"]
     uid = fs.upsert_user(address)
     print(f"user {address} -> users/{uid}")
