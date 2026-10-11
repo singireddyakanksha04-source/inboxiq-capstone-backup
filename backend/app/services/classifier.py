@@ -54,6 +54,16 @@ class Classifier(Protocol):
 # Personal label, because a reset code from a sender Gmail files as personal
 # is still a code.
 _URGENT_RULES: list[tuple[str, str]] = [
+    # Payment problems, transfers and status notices. First, because bank
+    # templates carry bill words ("autopay") in every footer.
+    (
+        "alert",
+        r"\bzelle\b|couldn[’']?t (complete|process) your (online )?payment|"
+        r"payment (failed|declined|was declined|was unsuccessful|could not be processed)|"
+        r"\btracked (flight|price)s?\b|price (alert|tracking)|"
+        r"application (received|submitted)|thank you for (applying|your application)|"
+        r"registration status",
+    ),
     (
         "otp",
         r"\b(one[- ]time (pass)?code|verification code|temporary (access )?code|"
@@ -64,9 +74,23 @@ _URGENT_RULES: list[tuple[str, str]] = [
         "security",
         r"\b(new device|new sign-?in|signed in (to|from)|verify it'?s you|"
         r"security alert|suspicious (login|activity)|shared (your|some).*data|"
-        r"account access|someone (used|is using) your)\b",
+        r"account access|someone (used|is using) your|"
+        r"password (was |has been )?(successfully )?(reset|changed|updated)|reset your password|"
+        r"confirm (this |recent |your )?activity|fraud alert|unusual activity)\b",
     ),
 ]
+
+_PROMO_PATTERN = (
+    r"(\b\d{1,2}% off\b|sale ends|limited time|\bdeals?\b|coupon|promo code|"
+    r"shop now|save big|\bclearance\b|\bsave (today|now)\b|for \$0(\.00)?\b|\b\d+ months? of \w+( \w+)? for (free|\$0)|"
+    r"try (\w+ )?premium|save up to|only \d+ \w+ left|fees? waived)"
+)
+
+_BILL_PATTERN = (
+    r"\b(payment due|amount due|statement is (now )?(ready|available)|"
+    r"autopay|past due|minimum payment|(new|your) invoice|"
+    r"invoice (is )?(available|attached|due|#))\b"
+)
 
 _RULES: list[tuple[str, str]] = [
     # Needs a parcel/order in the sentence: a bare "delivered" or "arriving"
@@ -81,13 +105,8 @@ _RULES: list[tuple[str, str]] = [
         r"(has|have) shipped|delivery (update|attempt|exception)|"
         r"arriving (today|tomorrow|on (mon|tue|wed|thu|fri|sat|sun)))\b",
     ),
-    ("receipt", r"\b(receipt|order confirm|your order|thanks for your (order|purchase)|invoice paid)\b"),
-    (
-        "bill",
-        r"\b(payment due|amount due|statement is ready|statement is available|"
-        r"autopay|past due|minimum payment|(new|your) invoice|"
-        r"invoice (is )?(available|attached|due|#))\b",
-    ),
+    ("receipt", r"\b(receipt|order confirm(ed|ation)?|your order|thanks for your (order|purchase)|invoice paid)\b"),
+    ("bill", _BILL_PATTERN),
     # Lifecycle of a subscription the user already has. Plain "membership" or
     # "annual subscription" is also sales copy and fine print on deal mail.
     (
@@ -100,7 +119,8 @@ _RULES: list[tuple[str, str]] = [
         r"(renewed|renews|cancell?ed|expired|expires|expiring|ending|ends|paused|"
         r"activated|confirmed|started)|"
         r"plan will (renew|end|expire|change)|"
-        r"subscription (confirmation|receipt|renewal|cancell?ation|has been))\b",
+        r"subscription (confirmation|receipt|renewal|cancell?ation|has been)|"
+        r"subscription is (now )?(ready|active))\b",
     ),
     (
         "alert",
@@ -108,18 +128,44 @@ _RULES: list[tuple[str, str]] = [
         r"job match(es)?|new job(s)? for you|now hiring|recommended for you|"
         r"based on your (recent )?(activity|search))\b",
     ),
-    (
-        "promotion",
-        r"(\b\d{1,2}% off\b|sale ends|limited time|\bdeals?\b|coupon|promo code|"
-        r"shop now|save big|\bclearance\b|\bsave (today|now)\b|for \$0(\.00)?\b|\b\d+ months? of \w+( \w+)? for (free|\$0)|"
-        r"try (\w+ )?premium)",
-    ),
+    ("promotion", _PROMO_PATTERN),
     (
         "newsletter",
         r"\b(newsletter|this week in|digest|unsubscribe from our list|issue #|"
         r"weekly (\w+ )?(news|roundup|recap))\b",
     ),
 ]
+
+# A payment receipt for something that recurs (a plan, a membership, a
+# billing period) is a subscription, not a one-off receipt. Both halves must
+# match: "total charged" alone is a ride or an order, and "subscription"
+# alone is sales copy.
+_PAID_RE = re.compile(
+    r"\b(receipt|amount paid|total charged|invoice (has been )?paid|has been paid|"
+    r"payment (received|successful|confirmation|was successful|has been processed)|"
+    r"thanks for your payment|(we|you('ve| have)? been|you were) (charged|billed))\b"
+)
+_RECURRING_RE = re.compile(
+    r"\b((monthly|annual|yearly) (plan|subscription|membership|fee|billing|charge)|"
+    r"per (month|year)|recurring|auto-?renew\w*|renews?|"
+    r"billed (monthly|annually|yearly|every)|next (billing|payment|charge)|"
+    r"billing (period|cycle)|subscription|membership)\b"
+    r"|\$\d[\d,.]*\s?/\s?(mo|month|yr|year)\b"
+)
+# "Sep 3 - Oct 3, 2026" or "09/03/2026 - 10/03/2026": the period a charge covers.
+_MON = r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?"
+_PERIOD_RANGE_RE = re.compile(
+    rf"\b{_MON} (\d{{1,2}})(?:,? (\d{{4}}))?\s*(?:-|–|—|to)\s*{_MON} (\d{{1,2}}),? (\d{{4}})\b"
+    r"|\b(\d{1,2})/(\d{1,2})/(\d{4})\s*(?:-|–|—|to)\s*(\d{1,2})/(\d{1,2})/(\d{4})\b",
+    re.I,
+)
+
+
+def _is_recurring_charge(text: str) -> bool:
+    return bool(_PAID_RE.search(text)) and bool(
+        _RECURRING_RE.search(text) or _PERIOD_RANGE_RE.search(text)
+    )
+
 
 # Account notices and event confirmations. Only used when nothing above
 # matched and Gmail did not file the mail under Promotions, since the same
@@ -201,6 +247,20 @@ def _social_category(email: EmailMessage, domain: str) -> str | None:
     return "alert"
 
 
+_MARKETING_SUBDOMAINS = {"marketing", "promo", "promos", "promotions", "offers", "mailer", "deals"}
+# Only phrases a person wouldn't write to a friend; "great deal on the
+# couch" from a friend stays personal.
+_AD_PHRASE_RE = re.compile(
+    r"\b\d{1,2}% off\b|promo code|coupon|shop now|limited time|save up to|"
+    r"only \d+ \w+ left|fees? waived|unsubscribe"
+)
+
+
+def _looks_like_marketing(domain: str, head: str) -> bool:
+    first = domain.split(".")[0] if domain.count(".") >= 2 else ""
+    return first in _MARKETING_SUBDOMAINS or bool(_AD_PHRASE_RE.search(head))
+
+
 class RuleClassifier:
     """Header/keyword baseline. Cheap, deterministic, surprisingly hard to beat
     on transactional mail — which is exactly why it is the control group."""
@@ -213,11 +273,17 @@ class RuleClassifier:
             if re.search(pattern, blob):
                 return category, 0.7
 
-        # Gmail's own category labels are strong evidence when present.
-        if "CATEGORY_PERSONAL" in email.labels:
-            return "personal", 0.5
-
         domain = email.sender_domain.lower()
+        head = f"{email.subject}\n{email.snippet}".lower()
+        # Gmail's own category labels are strong evidence when present, but
+        # Gmail also files some marketing as Personal (lease offers, mail from
+        # marketing.* senders); that is treated like the Promotions tab.
+        bulk_personal = False
+        if "CATEGORY_PERSONAL" in email.labels:
+            if not _looks_like_marketing(domain, head):
+                return "personal", 0.5
+            bulk_personal = True
+
         social = _social_category(email, domain)
         if social:
             return social, 0.6
@@ -225,11 +291,17 @@ class RuleClassifier:
         # On mail Gmail files as Promotions, bill/subscription words deep in
         # the body are fine print ("membership is required", "subscription
         # auto-renews at ..."), so those two only count in subject/preview.
-        promo_tab = "CATEGORY_PROMOTIONS" in email.labels
-        head = f"{email.subject}\n{email.snippet}".lower()
+        promo_tab = "CATEGORY_PROMOTIONS" in email.labels or bulk_personal
         listing = _matches(domain, _LISTING_DOMAINS)
+        # Card statements say "payment received" and "next payment" too;
+        # those stay bills.
+        charge_text = head if promo_tab else blob
+        if _is_recurring_charge(charge_text) and not re.search(_BILL_PATTERN, charge_text):
+            return "subscription", 0.7
         for category, pattern in _RULES:
             if category == "shipping" and listing:
+                continue
+            if category == "alert" and promo_tab:
                 continue
             text = head if promo_tab and category in ("bill", "subscription") else blob
             if re.search(pattern, text):
@@ -320,12 +392,13 @@ class GroqClassifier:
 # ------------------------------------------------ promotion subcategories
 
 _PROMO_SUBCATS: list[tuple[str, str]] = [
-    ("travel", r"\b(flight|hotel|resort|vacation|booking\.com|airbnb|itinerary|airfare)\b"),
+    ("travel", r"\b(flights?|hotels?|resorts?|vacations?|booking\.com|airbnb|itinerary|airfares?)\b"),
     ("food", r"\b(restaurant|delivery|doordash|uber eats|grubhub|recipe|menu|dining)\b"),
     ("groceries", r"\b(grocery|groceries|instacart|supermarket|produce)\b"),
     ("electronics", r"\b(laptop|phone|electronics|headphones|tv|gadget|charger)\b"),
     ("clothing", r"\b(clothing|apparel|shoes|dress|sneakers|fashion|wardrobe)\b"),
     ("entertainment", r"\b(movie|concert|streaming|tickets|show|game pass|subscription box)\b"),
+    ("education", r"\b(courses?|bootcamps?|udemy|coursera|certificat\w*|masterclass|tutorials?|learning)\b"),
     ("finance", r"\b(credit card|loan|apr|cashback|invest(ment)?|bank(ing)?)\b"),
     ("shopping", r"\b(shop now|sale|deal|coupon|promo code|discount|% off)\b"),
 ]
@@ -378,19 +451,57 @@ _NAME_NOISE = {
 }
 
 
-def _guess_service_name(email: EmailMessage) -> str:
-    words = email.sender.split("<")[0].strip().strip('"').split()
+_LEGAL_SUFFIX_RE = re.compile(r",?\s+(inc|llc|ltd|limited|pbc|corp|corporation|gmbh|co)\.?$", re.I)
+_TIERS = (
+    r"(Pro|Plus|Premium|Max|Team|Teams|Family|Individual|Basic|Standard|Student|"
+    r"Duo|Business|Enterprise)"
+)
+# Tier names are matched case-sensitively: "Netflix Standard" is a plan,
+# "Netflix standard features" is not.
+# Capitalised words before a tier that describe the offer, not the product
+# ("Free Trial Enterprise", "Your Plus").
+_NOT_PRODUCT_WORDS = {
+    "free", "trial", "your", "the", "our", "this", "new", "plan", "subscription",
+    "total", "monthly", "annual", "yearly", "upgrade", "get", "try", "start",
+}
+_PRODUCT_TIER_RE = re.compile(rf"(?<![Tt]he )\b([A-Z][\w+]*(?: [A-Z][\w+]*)?) {_TIERS}\b")
+
+
+def _domain_name(domain: str) -> str:
+    # members.netflix.com -> "netflix": the label before the TLD, not the
+    # first; netflix.co.uk -> "netflix", not "co".
+    labels = domain.lower().split(".")
+    if len(labels) > 2 and labels[-2] in {"co", "com", "org", "net", "ac", "gov", "edu"}:
+        labels.pop()
+    return labels[-2] if len(labels) > 1 else labels[0]
+
+
+def _guess_service_name(email: EmailMessage, text: str = "") -> str:
+    """Service a subscription email is about. A product and plan named in
+    the email ("Spotify Premium") wins, since the sender is often the
+    company, an app store or a payment processor rather than the product;
+    otherwise the sender's display name without legal suffixes."""
+    domain = _domain_name(email.sender_domain or "")
+    display = email.sender.split("<")[0].strip().strip('"')
+    if "@" in display:  # bare address, no display name
+        display = ""
+    display = _LEGAL_SUFFIX_RE.sub("", display).strip(" ,")
+    display = re.sub(r"\.(io|com|ai|app|so|co|net|org|dev)$", "", display, flags=re.I)
+    words = display.split()
     while words and words[-1].lower().strip(".,") in _NAME_NOISE:
         words.pop()
     name = " ".join(words)
-    if name and name.lower() not in _STOPWORDS:
-        return name
-    # members.netflix.com -> "Netflix": the label before the TLD, not the
-    # first; netflix.co.uk -> "Netflix", not "Co".
-    labels = email.sender_domain.lower().split(".")
-    if len(labels) > 2 and labels[-2] in {"co", "com", "org", "net", "ac", "gov", "edu"}:
-        labels.pop()
-    return (labels[-2] if len(labels) > 1 else labels[0]).capitalize()
+    if not name or name.lower() in _STOPWORDS:
+        name = domain.capitalize()
+
+    # "(?<!the )": "The Cypress Team" is a sign-off, not a Team plan.
+    m = re.search(rf"(?<![Tt]he )\b{re.escape(name)} {_TIERS}\b", text)
+    if m:
+        return f"{name} {m.group(1)}"
+    for m in _PRODUCT_TIER_RE.finditer(text):
+        if not set(m.group(1).lower().split()) & _NOT_PRODUCT_WORDS:
+            return f"{m.group(1)} {m.group(2)}"
+    return name
 
 
 def _pick_amount(blob: str) -> tuple[float, str | None] | None:
@@ -419,6 +530,34 @@ def _pick_amount(blob: str) -> tuple[float, str | None] | None:
     return (best[1], best[2]) if best else None
 
 
+def _cycle_from_period(text: str) -> str | None:
+    """monthly/yearly from the billing period a receipt covers."""
+    from datetime import date
+
+    m = _PERIOD_RANGE_RE.search(text)
+    if not m:
+        return None
+    g = m.groups()
+    try:
+        if g[0]:
+            months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+            end = date(int(g[5]), months.index(g[3][:3].lower()) + 1, int(g[4]))
+            start = date(int(g[2] or g[5]), months.index(g[0][:3].lower()) + 1, int(g[1]))
+            if start > end:  # "Dec 3 - Jan 3, 2027"
+                start = start.replace(year=start.year - 1)
+        else:
+            start = date(int(g[8]), int(g[6]), int(g[7]))
+            end = date(int(g[11]), int(g[9]), int(g[10]))
+    except ValueError:
+        return None
+    days = (end - start).days
+    if 26 <= days <= 32:
+        return "monthly"
+    if 360 <= days <= 370:
+        return "yearly"
+    return None
+
+
 def extract_subscription_info(email: EmailMessage) -> dict:
     """Rules-based pull of service/amount/cycle/renewal hint from a
     category == 'subscription' email. No LLM call — same free-baseline
@@ -438,13 +577,15 @@ def extract_subscription_info(email: EmailMessage) -> dict:
             cycle = "yearly"
         else:
             cycle = "monthly"
+    if cycle is None:
+        cycle = _cycle_from_period(blob)
     # A period written on the amount itself ("$99/yr") beats a cycle word
     # found elsewhere in the email, except for trials.
     if amount and amount[1] and cycle != "trial":
         cycle = "monthly" if amount[1].startswith("mo") else "yearly"
 
     return {
-        "sub_service": _guess_service_name(email),
+        "sub_service": _guess_service_name(email, blob),
         "sub_amount": f"${amount[0]:,.2f}" if amount else None,
         "sub_cycle": cycle,
         "sub_renewal_hint": renewal_match.group(2).strip() if renewal_match else None,

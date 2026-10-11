@@ -20,6 +20,13 @@ from app.models.email import EmailMessage
 # for bill and subscription mail, where they are almost always a real due date.
 DUE_CATEGORIES = {"bill", "subscription", "receipt", "alert", "personal", "other"}
 _RELATIVE_CATEGORIES = {"bill", "subscription"}
+# Alerts from job boards and social sites quote other people's posts and
+# listings ("applications are due Sep 25"), which are not the user's dates;
+# only their own account dates count there, not open-ended deadlines.
+_QUOTING_DOMAINS = (
+    "linkedin.com", "facebookmail.com", "x.com", "twitter.com", "instagram.com",
+    "indeed.com", "ziprecruiter.com", "glassdoor.com", "remotehunter.com",
+)
 
 _MONTHS = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
@@ -48,11 +55,12 @@ _DATE = (
 _LEADS: list[tuple[str, str]] = [
     ("Payment due", r"(?:payment|amount|balance|bill|minimum payment|autopay|payment date)\s+(?:is\s+)?(?:due|scheduled)"),
     ("Payment due", r"(?:due date|pay(?:ment)? by|please pay)"),
-    ("Renews", r"(?:auto-?)?renew(?:s|al date|al)?|next (?:billing|payment|charge) (?:date|on)|will be (?:charged|billed)|trial ends"),
+    ("Renews", r"(?:auto-?)?renew(?:s|al date|al)?|next (?:billing|payment|charge)(?: date)?|will be (?:charged|billed)|trial ends"),
     ("Expires", r"expir(?:es|ing|y date|ation date|ation|e)|valid (?:until|through|thru)"),
     ("Event", r"(?:event|webinar|session|class|meeting|interview|appointment|orientation|conference)\s+(?:is\s+|will be\s+)?(?:on|scheduled for|starts)"),
     ("Deadline", r"deadline|last day to(?:\s+\w+){0,2}?|due|closes|(?:apply|register|enrol+|submit|respond|rsvp|sign up)(?:\s+[\w-]+){0,6}?\s+(?:by|before)"),
-    ("Expires", r"(?:offer|sale|deal|promotion|discount) ends|ends"),
+    # Only something the user has ends; "offer ends" / "season ends" is marketing.
+    ("Expires", r"(?:plan|subscription|membership|access|coverage)\s+ends"),
 ]
 _GAP = r"(?:[\s:,.\-]+|\b(?:on|by|of|is|at|for|before|until|date|the|will|be)\b)*"
 _PATTERNS = [
@@ -102,6 +110,9 @@ def extract_due_date(email: EmailMessage) -> tuple[str, str] | None:
     """(ISO date, label) for the first due date found, else None."""
     if email.category not in DUE_CATEGORIES:
         return None
+    domain = (email.sender_domain or "").lower()
+    if any(domain == d or domain.endswith("." + d) for d in _QUOTING_DOMAINS):
+        return None
     sent = (email.date or datetime.now(timezone.utc)).date()
     allow_relative = email.category in _RELATIVE_CATEGORIES
 
@@ -115,6 +126,8 @@ def extract_due_date(email: EmailMessage) -> tuple[str, str] | None:
         for label, pattern in _PATTERNS:
             for m in pattern.finditer(text):
                 if m.group("rel") and not allow_relative:
+                    continue
+                if label == "Deadline" and email.category == "alert":
                     continue
                 when = _to_date(m, sent)
                 # Dates far in the past or years out are card numbers, fine
