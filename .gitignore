@@ -16,3 +16,4 @@ token.json
 labels.json
 node_modules/
 dist/
+.pytest_cache/

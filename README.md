@@ -76,6 +76,17 @@ Open <http://localhost:5180>, click **Connect Gmail**, then **Sync inbox**.
 Use `localhost`, not `127.0.0.1` — the OAuth redirect URI is registered under
 that hostname.
 
+## Tests
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+python -m pytest tests -q
+```
+
+No Google account or network is needed: Firestore is replaced by an in-memory
+fake (`tests/fakefs.py`) and Gmail calls are stubbed in each test.
+
 ## API
 
 | Method | Path | Does |
@@ -138,3 +149,28 @@ Needs `GROQ_API_KEY` in `.env` — free at <https://console.groq.com/keys>. The
 `.env`, `secrets/oauth_client.json` and `secrets/tokens/` are gitignored and
 must stay that way. Each person creates their own OAuth client; tokens are
 never shared or committed.
+
+## Inbox search and advanced filters
+
+Search the active mailbox by subject, sender, snippet or body. Words are combined;
+quotes match a phrase. `from:shop@example.com` and `subject:receipt` restrict a term.
+Open **Search filters** for a sender name/address and inclusive **From date** /
+**To date** bounds. Dates use UTC days. Select a mailbox to combine category with
+these filters; **Reset all filters** returns to All Mail and clears the query.
+
+Search checks the newest **500 synced messages in the chosen mailbox**, not the
+entire Gmail inbox. It loads 50 results at a time; **Load more results** continues
+in relevance order, with newest dates and message IDs breaking ties. Sync refreshes
+the current search. Rows show matching text, and opening a message preserves the
+query. Changing account clears search state.
+
+`GET /api/emails/search/page?uid=&q=&sender=&category=&after=&before=&offset=&limit=`
+returns `items`, `next_offset` and `search_window`. `after` and `before` use
+`YYYY-MM-DD`; either can be omitted. Sender/date filters can be used without text.
+Page size is 1–200, and the scan is bounded at 500 messages. The older
+`/api/emails/search` list response remains compatible. Paging uses the current
+stored data rather than a historical snapshot; refresh after inbox updates.
+
+The local prototype scopes queries by UID. Production server-side account
+authorization remains a separate backlog item; UID scoping alone is not a
+production authorization boundary. Search does not change Gmail or call a model.
