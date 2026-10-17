@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "InboxIQ for Gmail",
-  "version": "0.1.6",
+  "version": "0.2.5",
   "description": "Sorts the Gmail inbox into InboxIQ mailboxes - bills, codes, security, promotions and the rest - inside Gmail's own sidebar.",
   "action": {
     "default_popup": "popup.html",
@@ -13,7 +13,8 @@
     "storage"
   ],
   "host_permissions": [
-    "https://gmail.googleapis.com/"
+    "https://gmail.googleapis.com/",
+    "https://api.groq.com/"
   ],
   "oauth2": {
     "client_id": "948915820665-oa6t4i8biv1l6mh1ollrm36u3k29cp3k.apps.googleusercontent.com",

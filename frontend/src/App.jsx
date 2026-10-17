@@ -13,6 +13,8 @@ import { SearchField } from "./features/emails/SearchField.jsx";
 import { useEmails } from "./features/emails/useEmails.js";
 import { useSearch } from "./features/emails/useSearch.js";
 import { OverviewCards } from "./features/overview/OverviewCards.jsx";
+import { CUSTOM_PREFIX, MyCategories } from "./features/personal/MyCategories.jsx";
+import { usePersonal } from "./features/personal/usePersonal.js";
 import { CategorySidebar } from "./features/stats/CategorySidebar.jsx";
 import { SubscriptionsPanel } from "./features/subscriptions/SubscriptionsPanel.jsx";
 import { useSubscriptions } from "./features/subscriptions/useSubscriptions.js";
@@ -67,6 +69,8 @@ export default function App() {
     detect: detectSubs,
     reload: reloadSubs,
   } = useSubscriptions(authorized ? uid : "");
+  const personal = usePersonal(authorized ? uid : "");
+  const [sorting, setSorting] = useState(false);
 
   useEffect(() => {
     // Skipped when a popover already used this Escape to close itself.
@@ -79,6 +83,23 @@ export default function App() {
     setSearchRevision((value) => value + 1);
     reload();
     reloadSubs();
+    if (personal.items.length) sortWithAI();
+  }
+
+  // AI pass for the account's own categories. A failure only shows a note;
+  // the normal sort has already finished.
+  async function sortWithAI() {
+    setSorting(true);
+    setStatus("Sorting into your categories with AI…");
+    try {
+      const r = await personal.sort();
+      setStatus(r.error ? r.error : `AI checked ${r.checked} emails, ${r.matched} matched your categories.`);
+      setSearchRevision((value) => value + 1);
+      reload();
+    } catch (e) {
+      setStatus("AI sorting failed: " + e.message);
+    }
+    setSorting(false);
   }
 
   function pickMailbox(c) {
@@ -158,14 +179,16 @@ export default function App() {
   const totalPages = pageCount;
   const range = listed.length ? `${page * PAGE_SIZE + 1}–${page * PAGE_SIZE + listed.length}` : "0";
   const selected = listed.find((m) => m.id === selectedId);
-  const title = category ? categoryMeta(category).label : "All Mail";
+  const custom = category?.startsWith(CUSTOM_PREFIX)
+    ? personal.items.find((c) => CUSTOM_PREFIX + c.id === category) : null;
+  const title = custom ? custom.name : category ? categoryMeta(category).label : "All Mail";
   const quoted = `\u201c${query.trim()}\u201d`;
   // Summary counts stay independent from the current 20-message page.
   const upcoming = emails.filter((m) => {
     const due = dueInfo(m);
     return due && due.days >= 0 && due.days <= 14;
   }).length;
-  const shown = category
+  const shown = custom ? custom.count : category
     ? counts[category] || 0
     : Object.values(counts).reduce((a, b) => a + b, 0);
 
@@ -177,6 +200,8 @@ export default function App() {
           InboxIQ
         </div>
         <CategorySidebar counts={counts} active={category} onPick={pickMailbox} />
+        <MyCategories items={personal.items} max={personal.max} active={category} onPick={pickMailbox}
+          onAdd={personal.add} onRemove={personal.remove} onSort={sortWithAI} busy={sorting} />
       </aside>
 
       <header className="toolbar">
@@ -221,7 +246,8 @@ export default function App() {
       <section className="pane detail-pane" ref={detailRef}
         aria-label={selected ? "Message" : "Summary"}>
         {selected ? (
-          <ReadingPane key={`${uid}:${selected.id}`} uid={uid} email={selected} onClose={closeMessage} />
+          <ReadingPane key={`${uid}:${selected.id}`} uid={uid} email={selected} onClose={closeMessage}
+            personal={personal.items.find((c) => c.id === selected.custom_category)} />
         ) : (
           <div className="summary">
             <header className="pane-head summary-bar">

@@ -67,7 +67,14 @@ InboxIQ.ICON_PATHS = {
   uncategorized: "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0zM9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.4M12 17h.01",
   sync: "M4 12a8 8 0 0 1 14-5.3M20 4v4h-4M20 12a8 8 0 0 1-14 5.3M4 20v-4h4",
   back: "M15 5l-7 7 7 7",
+  chevron: "M6 9l6 6 6-6",
+  trash: "M4 7h16M10 11v6M14 11v6M5.5 7l1 12a1.5 1.5 0 0 0 1.5 1.4h8a1.5 1.5 0 0 0 1.5-1.4l1-12M9 7V4.5h6V7",
+  sparkle: "M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M18 6l-2.5 2.5M8.5 15.5 6 18",
 };
+
+// The person's own mailboxes are addressed as "my:<id>" so they never clash
+// with a built-in category.
+InboxIQ.CUSTOM_PREFIX = "my:";
 
 InboxIQ.icon = function (name, size, strokeWidth) {
   var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");

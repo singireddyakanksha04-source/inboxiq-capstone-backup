@@ -12,6 +12,16 @@
     error: "",
     counts: {},
     messages: [],
+    custom: [],          // the person's own categories, with counts
+    custom_max: 5,
+    ai_ready: false,     // a Groq key is saved
+    ai_note: "",
+    form: null,          // "category" | "key" while a form is open
+    drafts: {},
+    sorting: false,      // an AI sort is running
+    ai_progress: null,   // { done, total } while it runs
+    collapsed: {},       // group key -> true when closed
+    groupsChosen: false, // the person opened/closed a group; stop auto-fitting
     view: undefined, // undefined = mailbox list, null = all mail, else category
     scanned: 0,
   };
@@ -23,18 +33,39 @@
     onOpen: function (message) { openThread(message); },
   };
 
-  function send(message) {
+  var custom = InboxIQ.customHandlers(state, send, render);
+  Object.keys(custom).forEach(function (name) { handlers[name] = custom[name]; });
+
+  // `then` runs only on success, after the reply is applied.
+  function send(message, then) {
     state.busy = true;
     state.error = "";
+    if (message.type === "custom:sort") {
+      state.sorting = true;
+      state.ai_note = "";
+      state.ai_progress = null;
+    }
     render();
     chrome.runtime.sendMessage(message, function (reply) {
       state.busy = false;
+      if (message.type === "custom:sort") state.sorting = false;
       if (chrome.runtime.lastError) {
         state.error = chrome.runtime.lastError.message;
       } else if (reply && reply.error) {
-        state.error = reply.error;
+        console.warn("[InboxIQ]", message.type, "failed:", reply.error);
+        state.error = InboxIQ.friendlyError(reply.error);
+        if (message.type === "custom:remove") {
+          // Put the real list back, keeping the error on screen.
+          var shown = state.error;
+          send({ type: "status" }, function () { state.error = shown; render(); });
+        }
+        setTimeout(function () { if (panel) panel.scrollTop = 0; }, 0); // errors show at the top
       } else if (reply) {
         apply(reply);
+        if (then) return then(reply);
+        // A fresh scan brings new mail: sort it into the person's categories.
+        if ((message.type === "scan" || message.type === "connect") &&
+            reply.ai_ready && (reply.custom || []).length) return send({ type: "custom:sort" });
       }
       render();
     });
@@ -48,6 +79,7 @@
     state.status = reply.email
       ? reply.email + " · " + state.scanned + " messages sorted"
       : "";
+    InboxIQ.applyCustom(state, reply);
     if (!state.connected) state.view = undefined;
   }
 
@@ -92,6 +124,7 @@
     applyTheme();
     InboxIQ.renderPanel(panel, state, handlers);
     position(); // the panel just changed height
+    InboxIQ.fitPanel(panel, state, function () { InboxIQ.renderPanel(panel, state, handlers); });
   }
 
   // The left column Gmail draws Inbox/Starred/Labels in. Gmail's class names
@@ -245,6 +278,9 @@
   window.addEventListener("resize", scheduleMount);
 
   console.log("[InboxIQ] content script running on", location.href);
+
+  InboxIQ.loadGroups(state, render);
+  InboxIQ.watchProgress(state, render);
 
   // Ask for whatever the worker already has; it answers signed-out without
   // prompting, so nothing happens until the person clicks Connect Gmail.

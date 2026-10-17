@@ -2,9 +2,20 @@
 // and makes no Gmail calls: it asks this worker, which keeps the token in
 // Chrome's own identity store and the sorted result in extension storage.
 //
-// Read-only throughout. Nothing is labelled, archived, moved or deleted, and
-// no message text leaves the browser - sorting is the local rule classifier.
-importScripts("./classifier.js");
+// Read-only throughout. Nothing is labelled, archived, moved or deleted.
+// Built-in sorting is the local rule classifier and sends nothing anywhere.
+// The person's own categories (personal.js) are the one exception: when they
+// have added categories and their own Groq key, sender, subject and preview
+// of the newest messages go to the model to be sorted into them.
+importScripts("./classifier.js", "./personal.js");
+// The developer's own Groq key, copied from .env by scripts/load_key.mjs.
+// Git-ignored, so a fresh checkout has no such file and falls back to a key
+// saved from the panel.
+try {
+  importScripts("./local_key.js");
+} catch (err) {
+  // no local key file
+}
 
 var GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me";
 var SCAN_LIMIT = 150;   // newest messages in the inbox, kept small so a scan is quick
@@ -84,8 +95,10 @@ async function readMessage(token, id) {
   return {
     id: email.id,
     thread_id: email.thread_id,
+    sender: email.sender,
     from_name: from.name,
     subject: email.subject,
+    snippet: email.snippet,   // the preview the AI step reads for custom categories
     date: Number(raw.internalDate) || null,
     category: verdict.category,
     confidence: verdict.confidence,
@@ -144,6 +157,125 @@ async function cached() {
 // Signed-out answer: the panel shows Connect Gmail and nothing is requested.
 var SIGNED_OUT = { connected: false, counts: {}, messages: [], scanned: 0 };
 
+// --- the person's own categories ---------------------------------------------
+//
+// inboxiq_custom: { categories: [{ id, name, description }],
+//                   results: { <message id>: { category, reason, sig } } }
+// inboxiq_ai_key: the person's Groq key, kept only in this browser.
+
+async function customStore() {
+  var stored = await chrome.storage.local.get("inboxiq_custom");
+  var custom = stored.inboxiq_custom || {};
+  return { categories: custom.categories || [], results: custom.results || {} };
+}
+
+async function aiKey() {
+  var stored = await chrome.storage.local.get("inboxiq_ai_key");
+  return stored.inboxiq_ai_key || globalThis.InboxIQ_LOCAL_KEY || "";
+}
+
+// The scan as the panel sees it: each message carries its custom category
+// (only if it was decided against the current category list) and the list
+// comes with per-category counts.
+async function decorate(result) {
+  if (!result.connected) return result;
+  var custom = await customStore();
+  var sig = InboxIQ.customSignature(custom.categories);
+  var counts = {};
+  var messages = result.messages.map(function (m) {
+    var r = custom.results[m.id];
+    var hit = r && r.sig === sig && r.category ? r : null;
+    if (hit) counts[hit.category] = (counts[hit.category] || 0) + 1;
+    return Object.assign({}, m, {
+      custom_category: hit ? hit.category : null,
+      custom_reason: hit ? hit.reason : null,
+    });
+  });
+  return Object.assign({}, result, {
+    messages: messages,
+    custom: custom.categories.map(function (c) {
+      return Object.assign({}, c, { count: counts[c.id] || 0 });
+    }),
+    custom_max: InboxIQ.MAX_CUSTOM,
+    ai_ready: Boolean(await aiKey()),
+  });
+}
+
+async function addCategory(name, description) {
+  name = String(name || "").trim();
+  description = String(description || "").replace(/\s+/g, " ").trim();
+  if (!name || name.length > 30) throw new Error("Give the category a name of up to 30 characters.");
+  if (description.length < 5 || description.length > 200) {
+    throw new Error("Describe the category in one sentence (5 to 200 characters).");
+  }
+  var custom = await customStore();
+  if (custom.categories.length >= InboxIQ.MAX_CUSTOM) {
+    throw new Error("You can have up to " + InboxIQ.MAX_CUSTOM + " categories.");
+  }
+  if (custom.categories.some(function (c) { return c.name.toLowerCase() === name.toLowerCase(); })) {
+    throw new Error("You already have a category called " + name + ".");
+  }
+  var id = InboxIQ.customId(name, custom.categories.map(function (c) { return c.id; }));
+  custom.categories.push({ id: id, name: name, description: description });
+  await chrome.storage.local.set({ inboxiq_custom: custom });
+}
+
+async function removeCategory(id) {
+  var custom = await customStore();
+  custom.categories = custom.categories.filter(function (c) { return c.id !== id; });
+  await chrome.storage.local.set({ inboxiq_custom: custom });
+}
+
+// Ask the model about the newest messages not yet checked against the
+// current category list. A model failure comes back as ai_error next to the
+// scan, so the built-in mailboxes keep working.
+async function aiSort() {
+  var saved = await cached();
+  if (!saved) return SIGNED_OUT;
+  var custom = await customStore();
+  var key = await aiKey();
+  var error = null;
+  if (custom.categories.length && !key) error = "Add your Groq key to sort with AI.";
+  if (custom.categories.length && key) {
+    var sig = InboxIQ.customSignature(custom.categories);
+    var newest = saved.messages.slice(0, InboxIQ.AI_LIMIT);
+    var pending = newest.filter(function (m) {
+      var r = custom.results[m.id];
+      return !r || r.sig !== sig;
+    });
+    // Forget results for messages that have left the scan.
+    var keep = {};
+    saved.messages.forEach(function (m) { if (custom.results[m.id]) keep[m.id] = custom.results[m.id]; });
+    custom.results = keep;
+    // The panel draws a progress bar from this while the batches run.
+    await chrome.storage.local.set({ inboxiq_ai_progress: { done: 0, total: pending.length } });
+    for (var i = 0; i < pending.length; i += InboxIQ.AI_BATCH) {
+      var batch = pending.slice(i, i + InboxIQ.AI_BATCH);
+      var answers;
+      try {
+        answers = await InboxIQ.aiSortBatch(key, custom.categories, batch);
+      } catch (err) {
+        error = err.message;
+        break;
+      }
+      batch.forEach(function (m, j) {
+        custom.results[m.id] = { category: answers[j].category, reason: answers[j].reason, sig: sig };
+      });
+      await chrome.storage.local.set({
+        inboxiq_ai_progress: { done: Math.min(i + batch.length, pending.length), total: pending.length },
+      });
+    }
+    await chrome.storage.local.set({ inboxiq_custom: custom, inboxiq_ai_progress: null });
+  }
+  var result = await decorate(saved);
+  result.ai_error = error;
+  return result;
+}
+
+async function current() {
+  return decorate((await cached()) || SIGNED_OUT);
+}
+
 async function handle(message) {
   if (message.type === "status") {
     var saved = await cached();
@@ -154,7 +286,25 @@ async function handle(message) {
     } catch (err) {
       return SIGNED_OUT;
     }
-    return saved;
+    return decorate(saved);
+  }
+
+  if (message.type === "custom:add") {
+    await addCategory(message.name, message.description);
+    return current();
+  }
+  if (message.type === "custom:remove") {
+    await removeCategory(message.id);
+    return current();
+  }
+  if (message.type === "ai:key") {
+    var key = String(message.key || "").trim();
+    if (key) await chrome.storage.local.set({ inboxiq_ai_key: key });
+    else await chrome.storage.local.remove("inboxiq_ai_key");
+    return current();
+  }
+  if (message.type === "custom:sort") {
+    return aiSort();
   }
 
   if (message.type === "connect" || message.type === "scan") {
@@ -166,7 +316,7 @@ async function handle(message) {
       // they ask the same way the Connect button does.
       token = await getToken(true);
     }
-    return scan(token);
+    return decorate(await scan(token));
   }
 
   return { error: "Unknown request." };

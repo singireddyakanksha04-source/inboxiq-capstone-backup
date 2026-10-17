@@ -48,7 +48,7 @@ function withShortLinks(text) {
 
 // Detail pane for one message. The list only carries the snippet, so the
 // full text is fetched when a message is opened.
-export function ReadingPane({ uid, email, onClose }) {
+export function ReadingPane({ uid, email, onClose, personal }) {
   const [body, setBody] = useState(null);
 
   useEffect(() => {
@@ -104,6 +104,17 @@ export function ReadingPane({ uid, email, onClose }) {
             )}
           </div>
         </div>
+
+        {/* The account's own category, chosen by the AI, and why. */}
+        {personal && (
+          <div className="reader-insight">
+            <span className="tile tone-indigo" aria-hidden="true"><Icon name="sparkle" size={15} strokeWidth={2} /></span>
+            <div>
+              <span className="reader-insight-title ink-indigo">{personal.name}</span>
+              <span className="reader-insight-text">AI: {email.custom_reason || "matches your description"}</span>
+            </div>
+          </div>
+        )}
 
         {body === null ? (
           <div className="reader-loading" role="status"><span className="spinner" aria-hidden="true" /> Loading message…</div>
