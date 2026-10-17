@@ -69,8 +69,11 @@ globalThis.fetch = async (url, options) => {
 
 // Loaded the way a service worker loads it: a global to hang InboxIQ on, and
 // no CommonJS module in scope.
-globalThis.importScripts = (relative) => {
-  new Function("self", read("../src/" + relative.replace("./", "")))(globalThis);
+globalThis.importScripts = (...files) => {
+  for (const relative of files) {
+    if (relative.includes("local_key")) throw new Error("NetworkError: local_key.js not found");
+    new Function("self", read("../src/" + relative.replace("./", "")))(globalThis);
+  }
 };
 
 new Function(read("../src/background.js")).call(globalThis);

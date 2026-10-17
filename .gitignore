@@ -8,6 +8,7 @@ secrets/
 .env
 *.json.key
 token.json
+extension/src/local_key.js
 
 # os
 .DS_Store

@@ -26,7 +26,7 @@ def writes_for(f, id):
 def test_health(env):
     c, _ = env
     r = c.get("/health"); assert r.status_code == 200
-    assert r.json()["status"] == "ok" and set(r.json()["features"]) == {"auth", "classify", "emails", "ingest"}
+    assert r.json()["status"] == "ok" and set(r.json()["features"]) == {"auth", "classify", "emails", "ingest", "personal"}
 
 def test_backends(env):
     c, _ = env
