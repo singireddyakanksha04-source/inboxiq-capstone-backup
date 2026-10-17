@@ -120,7 +120,10 @@ def get_email(uid: str, message_id: str) -> dict | None:
 
 def list_emails(uid: str, limit: int = 20, category: str | None = None) -> list[dict]:
     q = _emails(uid)
-    if category == "uncategorized":
+    if category and category.startswith(CUSTOM_PREFIX):
+        # The account's own mailbox ("my:<id>"); the built-in category stays as is.
+        q = q.where(filter=firestore.FieldFilter("custom_category", "==", category[len(CUSTOM_PREFIX):]))
+    elif category == "uncategorized":
         # count_by_category's synthetic bucket for category is None/missing —
         # never a real stored value, so it needs its own filter.
         q = q.where(filter=firestore.FieldFilter("category", "==", None))
@@ -489,6 +492,53 @@ def count_by_category(uid: str) -> dict[str, int]:
     for doc in _emails(uid).select(["category"]).stream():
         key = (doc.to_dict() or {}).get("category") or "uncategorized"
         counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+# ---------------------------------------------------------------- custom categories
+
+# Each account can add its own categories (name + one-line description). They
+# sit on top of the built-in ones like Gmail labels: an email keeps its normal
+# category and may also carry one custom_category. Mailbox key: "my:<id>".
+CUSTOM_PREFIX = "my:"
+
+
+def get_custom_categories(uid: str) -> list[dict]:
+    return (get_user(uid) or {}).get("custom_categories") or []
+
+
+def set_custom_categories(uid: str, categories: list[dict]) -> None:
+    db().collection("users").document(uid).set({"custom_categories": categories}, merge=True)
+
+
+def set_custom_result(uid: str, message_id: str, category_id: str | None,
+                      reason: str, signature: str) -> None:
+    """signature records which category list the email was checked against,
+    so it is only sent to the model again when that list changes."""
+    _emails(uid).document(message_id).set(
+        {"custom_category": category_id, "custom_reason": reason, "custom_sig": signature},
+        merge=True,
+    )
+
+
+def clear_custom_category(uid: str, category_id: str) -> int:
+    """Take a deleted category off every email that carried it."""
+    q = _emails(uid).where(filter=firestore.FieldFilter("custom_category", "==", category_id))
+    cleared = 0
+    for snap in q.stream():
+        _emails(uid).document(snap.id).set(
+            {"custom_category": None, "custom_reason": None, "custom_sig": None}, merge=True
+        )
+        cleared += 1
+    return cleared
+
+
+def count_by_custom(uid: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for doc in _emails(uid).select(["custom_category"]).stream():
+        key = (doc.to_dict() or {}).get("custom_category")
+        if key:
+            counts[key] = counts.get(key, 0) + 1
     return counts
 
 
