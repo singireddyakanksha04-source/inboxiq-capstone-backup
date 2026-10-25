@@ -77,6 +77,9 @@ globalThis.importScripts = (...files) => {
   }
 };
 new Function(read("../src/background.js")).call(globalThis);
+// Busy answers are retried after a wait; no real waiting in tests.
+const sleeps = [];
+InboxIQ.sleep = async (ms) => { sleeps.push(ms); };
 const send = (message) => new Promise((resolve) => listener(message, null, resolve));
 const JOBS = { type: "custom:add", name: "Job hunt", description: "emails about my job applications, interviews and recruiters" };
 let checks = 0;

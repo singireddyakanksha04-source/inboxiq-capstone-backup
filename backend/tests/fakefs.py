@@ -21,6 +21,9 @@ class Doc:
             self.store.docs[self.path].update(copy.deepcopy(data))
         else:
             self.store.docs[self.path] = copy.deepcopy(data)
+    def delete(self):
+        self.store.writes.append((self.path, None, False))
+        self.store.docs.pop(self.path, None)
 
 class Query:
     def __init__(self, coll, filters=(), order=None, lim=None, fields=None):
