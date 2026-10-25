@@ -17,6 +17,8 @@
     form: null,          // "category" | "key" while a form is open
     drafts: {},
     sorting: false,      // an AI sort is running
+    splitting: null,     // the category being split into subcategories
+    subs: {},            // parent -> { items, other } once split
     ai_progress: null,   // { done, total } while it runs
     collapsed: {},       // group key -> true when closed
     groupsChosen: false, // the person opened/closed a group; stop auto-fitting
@@ -48,10 +50,15 @@
       state.ai_note = "";
       state.ai_progress = null;
     }
+    if (message.type === "sub:split") {
+      state.splitting = message.parent;
+      state.ai_progress = null;
+    }
     render();
     chrome.runtime.sendMessage(message, function (reply) {
       state.busy = false;
       if (message.type === "custom:sort") state.sorting = false;
+      if (message.type === "sub:split") state.splitting = null;
       if (chrome.runtime.lastError) state.error = chrome.runtime.lastError.message;
       else if (reply && reply.error) {
         console.warn("[InboxIQ]", message.type, "failed:", reply.error);

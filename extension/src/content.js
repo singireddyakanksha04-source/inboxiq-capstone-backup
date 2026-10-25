@@ -19,17 +19,27 @@
     form: null,          // "category" | "key" while a form is open
     drafts: {},
     sorting: false,      // an AI sort is running
+    splitting: null,     // the category being split into subcategories
+    subs: {},            // parent -> { items, other } once split
     ai_progress: null,   // { done, total } while it runs
     collapsed: {},       // group key -> true when closed
     groupsChosen: false, // the person opened/closed a group; stop auto-fitting
     view: undefined, // undefined = mailbox list, null = all mail, else category
+    listInGmail: true,   // a picked mailbox shows in Gmail's own list on the right
+    selected: undefined, // that mailbox (undefined = none, null = all sorted mail)
     scanned: 0,
   };
 
   var handlers = {
     onConnect: function () { send({ type: "connect" }); },
     onRescan: function () { send({ type: "scan", force: true }); },
-    onPick: function (category) { state.view = category; render(); },
+    // The list stays; the picked mailbox shows in Gmail on the right. Picking
+    // it again lets go of it.
+    onPick: function (key) {
+      state.selected = state.selected === key ? undefined : key;
+      state.form = null;
+      render();
+    },
     onOpen: function (message) { openThread(message); },
   };
 
@@ -45,10 +55,15 @@
       state.ai_note = "";
       state.ai_progress = null;
     }
+    if (message.type === "sub:split") {
+      state.splitting = message.parent;
+      state.ai_progress = null;
+    }
     render();
     chrome.runtime.sendMessage(message, function (reply) {
       state.busy = false;
       if (message.type === "custom:sort") state.sorting = false;
+      if (message.type === "sub:split") state.splitting = null;
       if (chrome.runtime.lastError) {
         state.error = chrome.runtime.lastError.message;
       } else if (reply && reply.error) {
@@ -125,6 +140,32 @@
     InboxIQ.renderPanel(panel, state, handlers);
     position(); // the panel just changed height
     InboxIQ.fitPanel(panel, state, function () { InboxIQ.renderPanel(panel, state, handlers); });
+    showInGmail();
+  }
+
+  // Picking a mailbox in the panel shows its messages in Gmail's own list:
+  // a Gmail search for exactly those messages by Message-ID. Leaving it puts
+  // Gmail back on the inbox, but only if Gmail is still on that search.
+  // Gmail is only moved when the view or the messages behind it change, so an
+  // email opened from that list is not pulled away on an ordinary redraw.
+  var shownHash = null;
+  function showInGmail() {
+    if (state.selected === undefined) {
+      if (shownHash && location.hash === shownHash) location.hash = "#inbox";
+      shownHash = null;
+      return;
+    }
+    var hash = "#inbox"; // all sorted mail is the inbox
+    if (state.selected !== null) {
+      var query = InboxIQ.gmailQuery(InboxIQ.viewRows(state, state.selected));
+      // Without Message-IDs there is nothing exact to search for; leave Gmail
+      // where it is rather than show unrelated mail.
+      if (!query) return;
+      hash = "#search/" + encodeURIComponent(query);
+    }
+    if (hash === shownHash) return;
+    shownHash = hash;
+    location.hash = hash;
   }
 
   // The left column Gmail draws Inbox/Starred/Labels in. Gmail's class names
@@ -288,6 +329,12 @@
     if (!chrome.runtime.lastError && reply) {
       apply(reply);
       render();
+      // A scan saved before Message-IDs were read cannot be shown in Gmail's
+      // list; read the inbox again once. Sorting results are kept by message.
+      var messages = reply.messages || [];
+      if (reply.connected && messages.length && !messages.some(function (m) { return m.rfc822_id; })) {
+        send({ type: "scan" });
+      }
     }
   });
 })(window.InboxIQ);

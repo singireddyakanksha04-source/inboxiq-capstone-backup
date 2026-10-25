@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "InboxIQ for Gmail",
-  "version": "0.2.5",
+  "version": "0.3.4",
   "description": "Sorts the Gmail inbox into InboxIQ mailboxes - bills, codes, security, promotions and the rest - inside Gmail's own sidebar.",
   "action": {
     "default_popup": "popup.html",

@@ -79,7 +79,8 @@ function parseFrom(raw) {
 // every rule.
 async function readMessage(token, id) {
   var raw = await gmail(token, "/messages/" + id +
-    "?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date");
+    "?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date" +
+    "&metadataHeaders=Message-ID");
   var from = parseFrom(header(raw.payload, "from"));
   var email = {
     id: raw.id,
@@ -99,6 +100,8 @@ async function readMessage(token, id) {
     from_name: from.name,
     subject: email.subject,
     snippet: email.snippet,   // the preview the AI step reads for custom categories
+    // The email's own Message-ID, which Gmail search finds with rfc822msgid:
+    rfc822_id: header(raw.payload, "message-id").trim().replace(/^<|>$/g, ""),
     date: Number(raw.internalDate) || null,
     category: verdict.category,
     confidence: verdict.confidence,
@@ -191,14 +194,124 @@ async function decorate(result) {
       custom_reason: hit ? hit.reason : null,
     });
   });
+  var split = await subStore();
+  var subs = {};
+  Object.keys(split).forEach(function (parent) {
+    var entry = split[parent];
+    var subCounts = {};
+    var members = 0;
+    messages.forEach(function (m) {
+      if (!inParent(m, parent)) return;
+      members += 1;
+      var r = entry.results[m.id];
+      var live = r && r.sub && entry.subs.some(function (s) { return s.id === r.sub; });
+      // Each message may sit in a built-in and a custom parent at once.
+      m.subs = Object.assign({}, m.subs);
+      m.subs[parent] = live ? { id: r.sub, reason: r.reason } : null;
+      if (live) subCounts[r.sub] = (subCounts[r.sub] || 0) + 1;
+    });
+    var placed = Object.values(subCounts).reduce(function (a, b) { return a + b; }, 0);
+    subs[parent] = {
+      items: entry.subs.map(function (s) { return Object.assign({}, s, { count: subCounts[s.id] || 0 }); }),
+      other: members - placed,
+    };
+  });
   return Object.assign({}, result, {
     messages: messages,
     custom: custom.categories.map(function (c) {
       return Object.assign({}, c, { count: counts[c.id] || 0 });
     }),
     custom_max: InboxIQ.MAX_CUSTOM,
+    subs: subs,
+    split_min: InboxIQ.SPLIT_MIN,
     ai_ready: Boolean(await aiKey()),
   });
+}
+
+// --- subcategories -------------------------------------------------------------
+//
+// inboxiq_subs: { <parent>: { subs: [{ id, name, description }],
+//                             results: { <message id>: { sub, reason } } } }
+// <parent> is a built-in category ("promotion") or one of the person's own
+// ("my:job_hunt"). A message in the parent without a live subcategory is
+// shown as Other, so deleting a subcategory returns its messages there.
+
+async function subStore() {
+  var stored = await chrome.storage.local.get("inboxiq_subs");
+  return stored.inboxiq_subs || {};
+}
+
+function inParent(message, parent) {
+  if (parent.indexOf(InboxIQ.CUSTOM_PREFIX) === 0) {
+    return message.custom_category === parent.slice(InboxIQ.CUSTOM_PREFIX.length);
+  }
+  return message.category === parent;
+}
+
+// The newest messages of the parent go to the model twice: once to propose
+// subcategories, then in groups to be sorted into them. Nothing is saved
+// unless both steps finish, so a failed split leaves the category as it was.
+async function splitCategory(parent, label, description) {
+  parent = String(parent || "");
+  var saved = await cached();
+  if (!saved || !parent) throw new Error("Connect Gmail first.");
+  var view = await decorate(saved);
+  var members = view.messages.filter(function (m) { return inParent(m, parent); })
+    .slice(0, InboxIQ.AI_LIMIT);
+  if (members.length < InboxIQ.SPLIT_MIN) {
+    throw new Error("A category needs at least " + InboxIQ.SPLIT_MIN + " emails to split.");
+  }
+  var key = await aiKey();
+  if (!key) throw new Error("Add your Groq key to split with AI.");
+
+  var total = members.length + 1; // the suggestion step counts as one
+  try {
+    await chrome.storage.local.set({ inboxiq_ai_progress: { done: 0, total: total } });
+    var subs = await InboxIQ.aiSuggestSubs(key, String(label || parent), String(description || ""), members);
+    if (!subs.length) throw new Error("Couldn't find clear subcategories in these emails.");
+    await chrome.storage.local.set({ inboxiq_ai_progress: { done: 1, total: total } });
+    var results = {};
+    for (var i = 0; i < members.length; i += InboxIQ.AI_BATCH) {
+      var batch = members.slice(i, i + InboxIQ.AI_BATCH);
+      var answers = await InboxIQ.aiSortBatch(key, subs, batch);
+      batch.forEach(function (m, j) {
+        results[m.id] = { sub: answers[j].category, reason: answers[j].reason };
+      });
+      await chrome.storage.local.set({ inboxiq_ai_progress: { done: 1 + i + batch.length, total: total } });
+    }
+    var store = await subStore();
+    store[parent] = { subs: subs, results: results };
+    await chrome.storage.local.set({ inboxiq_subs: store });
+  } finally {
+    await chrome.storage.local.set({ inboxiq_ai_progress: null });
+  }
+}
+
+async function renameSub(parent, id, name) {
+  name = String(name || "").replace(/\s+/g, " ").trim();
+  if (!name || name.length > 30) throw new Error("Give the subcategory a name of up to 30 characters.");
+  var store = await subStore();
+  var entry = store[parent];
+  var sub = entry && entry.subs.filter(function (s) { return s.id === id; })[0];
+  if (!sub) throw new Error("That subcategory no longer exists.");
+  if (entry.subs.some(function (s) { return s.id !== id && s.name.toLowerCase() === name.toLowerCase(); })) {
+    throw new Error("There is already a subcategory called " + name + ".");
+  }
+  sub.name = name;
+  await chrome.storage.local.set({ inboxiq_subs: store });
+}
+
+async function removeSub(parent, id) {
+  var store = await subStore();
+  var entry = store[parent];
+  if (!entry) return;
+  entry.subs = entry.subs.filter(function (s) { return s.id !== id; });
+  Object.keys(entry.results).forEach(function (msgId) {
+    if (entry.results[msgId].sub === id) delete entry.results[msgId];
+  });
+  // One group left is no split at all.
+  if (entry.subs.length < 2) delete store[parent];
+  await chrome.storage.local.set({ inboxiq_subs: store });
 }
 
 async function addCategory(name, description) {
@@ -224,6 +337,11 @@ async function removeCategory(id) {
   var custom = await customStore();
   custom.categories = custom.categories.filter(function (c) { return c.id !== id; });
   await chrome.storage.local.set({ inboxiq_custom: custom });
+  var store = await subStore();
+  if (store[InboxIQ.CUSTOM_PREFIX + id]) {
+    delete store[InboxIQ.CUSTOM_PREFIX + id];
+    await chrome.storage.local.set({ inboxiq_subs: store });
+  }
 }
 
 // Ask the model about the newest messages not yet checked against the
@@ -305,6 +423,18 @@ async function handle(message) {
   }
   if (message.type === "custom:sort") {
     return aiSort();
+  }
+  if (message.type === "sub:split") {
+    await splitCategory(message.parent, message.label, message.description);
+    return current();
+  }
+  if (message.type === "sub:rename") {
+    await renameSub(message.parent, message.id, message.name);
+    return current();
+  }
+  if (message.type === "sub:remove") {
+    await removeSub(message.parent, message.id);
+    return current();
   }
 
   if (message.type === "connect" || message.type === "scan") {

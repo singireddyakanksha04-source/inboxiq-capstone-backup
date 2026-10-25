@@ -67,6 +67,7 @@ A message is not sent again until the category list changes.
 node extension/tests/classifier_parity.test.mjs   # same verdicts as the backend
 node extension/tests/background_scan.test.mjs     # scan, sort, count, token loss
 node extension/tests/personal_categories.test.mjs # own categories, AI sorting, failures
+node extension/tests/subcategories.test.mjs      # split a category, rename, delete, failures
 ```
 
 ## Limits

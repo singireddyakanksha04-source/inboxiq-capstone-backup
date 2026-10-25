@@ -86,13 +86,15 @@
     list.setAttribute("aria-label", "InboxIQ mailboxes");
     if (total > 0) {
       list.appendChild(
-        navItem({ label: "All sorted mail", tone: "blue", icon: "inbox" }, total, false,
+        navItem({ label: "All sorted mail", tone: "blue", icon: "inbox" }, total, isOn(state, null),
           function () { handlers.onPick(null); })
       );
     }
     function add(pair) {
       var meta = InboxIQ.categoryMeta(pair[0]);
-      list.appendChild(navItem(meta, pair[1], false, function () { handlers.onPick(pair[0]); }));
+      list.appendChild(navItem(meta, pair[1], isOn(state, pair[0]), function () { handlers.onPick(pair[0]); }));
+      if (isOn(state, pair[0])) list.appendChild(inlineActions(state, handlers, pair[0], meta.label, "", pair[1], null));
+      appendSubs(list, pair[0], state, handlers);
     }
     function sum(pairs) { return pairs.reduce(function (n, p) { return n + p[1]; }, 0); }
     if (urgent.length) list.appendChild(groupHeader("attention", "Needs attention", sum(urgent), state, handlers));
@@ -239,11 +241,12 @@
     var list = el("nav", "iq-list");
     list.setAttribute("aria-label", "My categories");
     custom.forEach(function (c) {
-      var item = navItem(customMeta(c), c.count, false, function () {
-        handlers.onPick(InboxIQ.CUSTOM_PREFIX + c.id);
-      });
+      var key = InboxIQ.CUSTOM_PREFIX + c.id;
+      var item = navItem(customMeta(c), c.count, isOn(state, key), function () { handlers.onPick(key); });
       item.title = c.description;
       list.appendChild(item);
+      if (isOn(state, key)) list.appendChild(inlineActions(state, handlers, key, c.name, c.description, c.count, c));
+      appendSubs(list, InboxIQ.CUSTOM_PREFIX + c.id, state, handlers);
     });
     frag.appendChild(list);
 
@@ -282,7 +285,297 @@
     return frag;
   }
 
+  // --- subcategories -----------------------------------------------------------
+  //
+  // A split category keeps its own page; its subcategories sit under it in the
+  // list (closable like a group) and as chips at the top of its page. A
+  // subcategory's page is "sub|<parent>|<id>"; "_other" holds the rest.
+
+  var OTHER = "_other";
+
+  function subView(parent, id) { return "sub|" + parent + "|" + id; }
+
+  function parseSubView(view) {
+    if (typeof view !== "string" || view.indexOf("sub|") !== 0) return null;
+    var cut = view.lastIndexOf("|");
+    return { parent: view.slice(4, cut), id: view.slice(cut + 1) };
+  }
+
+  function inParent(m, parent) {
+    if (parent.indexOf(InboxIQ.CUSTOM_PREFIX) === 0) {
+      return m.custom_category === parent.slice(InboxIQ.CUSTOM_PREFIX.length);
+    }
+    return m.category === parent;
+  }
+
+  function subOf(m, parent) { return (m.subs && m.subs[parent]) || null; }
+
+  function parentLabel(state, parent) {
+    var own = findCustom(state, parent);
+    return own ? own.name : InboxIQ.categoryMeta(parent).label;
+  }
+
+  function subMeta(sub) {
+    return sub.id === OTHER
+      ? { label: "Other", tone: "gray", icon: "other" }
+      : { label: sub.name, tone: "indigo", icon: "sparkle" };
+  }
+
+  function subItems(entry) {
+    var items = entry.items.slice();
+    if (entry.other > 0) items.push({ id: OTHER, name: "Other", count: entry.other });
+    return items;
+  }
+
+  // In Gmail a picked mailbox stays in the list, highlighted, while its mail
+  // shows on the right; its few actions sit in a row under it.
+  function isOn(state, key) {
+    return Boolean(state.listInGmail) && state.selected !== undefined && state.selected === key;
+  }
+
+  function actionLink(label, onClick, extra) {
+    var button = el("button", "iq-link" + (extra ? " " + extra : ""), label);
+    button.type = "button";
+    button.addEventListener("click", onClick);
+    return button;
+  }
+
+  function inlineActions(state, handlers, key, label, description, count, own) {
+    if (state.splitting === key) return aiBanner(state, "AI is splitting this category");
+    var row = el("div", "iq-inline");
+    if (count >= (state.split_min || 6)) {
+      var split = el("button", "iq-link iq-with-icon");
+      split.type = "button";
+      split.disabled = state.busy;
+      split.appendChild(InboxIQ.icon("sparkle", 12, 2.2));
+      split.appendChild(el("span", null, state.subs && state.subs[key] ? "Split again" : "Split with AI"));
+      split.addEventListener("click", function () { handlers.onSplit(key, label, description); });
+      row.appendChild(split);
+    }
+    if (own) row.appendChild(actionLink("Delete", function () { handlers.onRemoveCategory(own.id); }, "iq-delete"));
+    return row.childNodes.length ? row : document.createDocumentFragment();
+  }
+
+  function subActions(state, handlers, parent, sub) {
+    if (state.form === "rename:" + sub.id) return renameForm(sub, parent, handlers);
+    var row = el("div", "iq-inline iq-inline-sub");
+    row.appendChild(actionLink("Rename", function () { handlers.onForm("rename:" + sub.id); }));
+    row.appendChild(actionLink("Delete", function () { handlers.onRemoveSub(parent, sub.id); }, "iq-delete"));
+    return row;
+  }
+
+  function appendSubs(list, parent, state, handlers) {
+    var entry = state.subs && state.subs[parent];
+    if (!entry) return;
+    var key = "sub:" + parent;
+    var closed = isCollapsed(state, key);
+    var toggle = el("button", "iq-subhead");
+    toggle.type = "button";
+    toggle.setAttribute("aria-expanded", String(!closed));
+    var chevron = InboxIQ.icon("chevron", 10, 2.4);
+    chevron.classList.add("iq-chevron");
+    toggle.appendChild(chevron);
+    toggle.appendChild(el("span", null, entry.items.length + " subcategories"));
+    toggle.addEventListener("click", function () { handlers.onToggleGroup(key); });
+    list.appendChild(toggle);
+    if (closed) return;
+    subItems(entry).forEach(function (s) {
+      var key = subView(parent, s.id);
+      var item = navItem(subMeta(s), s.count, isOn(state, key), function () { handlers.onPick(key); });
+      item.classList.add("iq-sub");
+      if (s.description) item.title = s.description;
+      list.appendChild(item);
+      if (isOn(state, key) && s.id !== OTHER) list.appendChild(subActions(state, handlers, parent, s));
+    });
+  }
+
+  // Top of a category page: the split button, the progress while it runs, or
+  // the subcategories once it has.
+  function splitArea(state, handlers, parent, label, description, count) {
+    if (state.splitting === parent) return aiBanner(state, "AI is splitting this category");
+    var wrap = el("div", "iq-split");
+    var entry = state.subs && state.subs[parent];
+    var enough = count >= (state.split_min || 6);
+    if (entry) {
+      var chips = el("div", "iq-chips");
+      subItems(entry).forEach(function (s) {
+        var chip = el("button", "iq-chip");
+        chip.type = "button";
+        chip.appendChild(el("span", null, s.id === OTHER ? "Other" : s.name));
+        chip.appendChild(el("span", "iq-chip-count", String(s.count)));
+        if (s.description) chip.title = s.description;
+        chip.addEventListener("click", function () { handlers.onPick(subView(parent, s.id)); });
+        chips.appendChild(chip);
+      });
+      wrap.appendChild(chips);
+    }
+    if (enough) {
+      var button = el("button", entry ? "iq-link iq-with-icon" : "iq-split-btn iq-with-icon");
+      button.type = "button";
+      button.disabled = state.busy;
+      button.appendChild(InboxIQ.icon("sparkle", 12, 2.2));
+      button.appendChild(el("span", null, entry ? "Split again" : "Split with AI"));
+      button.addEventListener("click", function () { handlers.onSplit(parent, label, description); });
+      wrap.appendChild(button);
+      if (!entry) wrap.appendChild(el("div", "iq-hint", "AI suggests 2 to 4 smaller groups for these emails."));
+    }
+    return wrap.childNodes.length ? wrap : document.createDocumentFragment();
+  }
+
+  function subPage(state, handlers, where) {
+    var frag = document.createDocumentFragment();
+    var entry = state.subs && state.subs[where.parent];
+    var sub = entry && subItems(entry).filter(function (s) { return s.id === where.id; })[0];
+    var plabel = parentLabel(state, where.parent);
+
+    var back = el("button", "iq-back");
+    back.type = "button";
+    back.appendChild(InboxIQ.icon("back", 14, 2));
+    back.appendChild(el("span", null, plabel));
+    back.addEventListener("click", function () { handlers.onPick(where.parent); });
+    frag.appendChild(back);
+    if (!sub) {
+      frag.appendChild(el("div", "iq-note", "This subcategory no longer exists."));
+      return frag;
+    }
+
+    var rows = InboxIQ.viewRows(state);
+
+    var head = el("div", "iq-cat-head");
+    var title = el("div", "iq-cat-title");
+    title.appendChild(tile(subMeta(sub)));
+    title.appendChild(paint(el("span", "iq-cat-name", sub.name), ink()));
+    title.appendChild(el("span", "iq-cat-count", rows.length + (rows.length === 1 ? " message" : " messages")));
+    if (sub.id !== OTHER) {
+      var rename = iconButton("pencil", "Rename " + sub.name, function () {
+        handlers.onForm("rename:" + sub.id);
+      });
+      rename.classList.add("iq-cat-edit");
+      title.appendChild(rename);
+      title.appendChild(iconButton("trash", "Delete " + sub.name, function () {
+        handlers.onRemoveSub(where.parent, sub.id);
+      }));
+    }
+    head.appendChild(title);
+    var about = el("div", "iq-cat-about");
+    about.appendChild(el("span", "iq-cat-about-label", "In " + plabel));
+    about.appendChild(el("span", null, sub.id === OTHER
+      ? "Emails that don't fit any of the subcategories."
+      : sub.description));
+    head.appendChild(about);
+    frag.appendChild(head);
+
+    if (state.form === "rename:" + sub.id) frag.appendChild(renameForm(sub, where.parent, handlers));
+
+    if (!rows.length) {
+      frag.appendChild(el("div", "iq-note", "No messages here right now."));
+      return frag;
+    }
+    frag.appendChild(rowsOrNote(state, rows, handlers, function (m) {
+      var s = subOf(m, where.parent);
+      return s && s.reason;
+    }));
+    return frag;
+  }
+
+  function iconButton(icon, label, onClick) {
+    var button = el("button", "iq-cat-delete");
+    button.type = "button";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.appendChild(InboxIQ.icon(icon, 14, 2));
+    button.addEventListener("click", onClick);
+    return button;
+  }
+
+  function renameForm(sub, parent, handlers) {
+    var form = keepKeys(el("form", "iq-form"));
+    var name = el("input");
+    name.maxLength = 30;
+    name.required = true;
+    name.value = sub.name;
+    form.appendChild(field("New name", name));
+    form.appendChild(formActions("Save", handlers));
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      handlers.onRenameSub(parent, sub.id, name.value);
+    });
+    setTimeout(function () { name.focus(); name.select(); }, 0);
+    return form;
+  }
+
+  function messageRows(rows, handlers, reasonOf) {
+    var list = el("div", "iq-list");
+    rows.forEach(function (m) {
+      var button = el("button", "iq-msg");
+      button.type = "button";
+      var from = el("div", "iq-from");
+      from.appendChild(paint(el("span", "iq-from-name", m.from_name || m.from || "Unknown sender"), ink()));
+      from.appendChild(el("span", "iq-date", shortDate(m.date)));
+      button.appendChild(from);
+      button.appendChild(paint(el("div", "iq-subject", m.subject || "(no subject)"), ink()));
+      if (m.due_label) button.appendChild(el("div", "iq-due", m.due_label));
+      var reason = reasonOf && reasonOf(m);
+      if (reason) button.appendChild(reasonChip(reason));
+      button.addEventListener("click", function () { handlers.onOpen(m); });
+      list.appendChild(button);
+    });
+    return list;
+  }
+
+  // The messages a view lists: a subcategory, one of the person's own
+  // categories, a built-in one, or (null) all sorted mail.
+  InboxIQ.viewRows = function (state, key) {
+    var view = arguments.length > 1 ? key : state.view;
+    if (view === undefined) return [];
+    var where = parseSubView(view);
+    var own = findCustom(state, view);
+    if (!where && !own && typeof view === "string" && view.indexOf(InboxIQ.CUSTOM_PREFIX) === 0) return [];
+    return (state.messages || []).filter(function (m) {
+      if (where) {
+        if (!inParent(m, where.parent)) return false;
+        var s = subOf(m, where.parent);
+        return where.id === OTHER ? !s : Boolean(s && s.id === where.id);
+      }
+      if (own) return m.custom_category === own.id;
+      return !view || m.category === view;
+    });
+  };
+
+  // In Gmail the list itself shows on the right, in Gmail's own mail list (see
+  // content.js); the panel only says so. The popup has no Gmail beside it, so
+  // it lists the messages itself.
+  function rowsOrNote(state, rows, handlers, reasonOf) {
+    if (!state.listInGmail) return messageRows(rows, handlers, reasonOf);
+    var shown = InboxIQ.gmailIds(rows).length;
+    var text = shown === rows.length
+      ? "Showing " + rows.length + (rows.length === 1 ? " email" : " emails") + " in Gmail on the right."
+      : shown
+        ? "Showing the newest " + shown + " of " + rows.length + " emails in Gmail on the right."
+        : "Sort the inbox again to show these emails in Gmail.";
+    var note = el("div", "iq-ai-note");
+    note.appendChild(InboxIQ.icon("inbox", 11, 2.2));
+    note.appendChild(el("span", null, text));
+    return note;
+  }
+
+  // Gmail search finds one exact email by its Message-ID; {a b} means a OR b.
+  // Kept to the newest 50 so the search stays a reasonable length.
+  InboxIQ.GMAIL_LIST_MAX = 50;
+  InboxIQ.gmailIds = function (rows) {
+    return rows.map(function (m) { return m.rfc822_id; })
+      .filter(function (id) { return id && /^[^\s"{}()]+$/.test(id); })
+      .slice(0, InboxIQ.GMAIL_LIST_MAX);
+  };
+  InboxIQ.gmailQuery = function (rows) {
+    var ids = InboxIQ.gmailIds(rows);
+    if (!ids.length) return null;
+    return "{" + ids.map(function (id) { return "rfc822msgid:" + id; }).join(" ") + "}";
+  };
+
   function messageView(state, handlers) {
+    var where = parseSubView(state.view);
+    if (where) return subPage(state, handlers, where);
     var frag = document.createDocumentFragment();
     var category = state.view;
     var own = findCustom(state, category);
@@ -296,10 +589,7 @@
     back.addEventListener("click", function () { handlers.onPick(undefined); });
     frag.appendChild(back);
 
-    var rows = (state.messages || []).filter(function (m) {
-      if (own) return m.custom_category === own.id;
-      return !category || m.category === category;
-    });
+    var rows = InboxIQ.viewRows(state);
 
     if (own) {
       frag.appendChild(customHeader(own, rows.length, handlers));
@@ -312,6 +602,10 @@
       var action = category && InboxIQ.CATEGORY_ACTIONS[category];
       if (action) frag.appendChild(el("div", "iq-action", action));
     }
+    if (category) {
+      frag.appendChild(splitArea(state, handlers, own ? InboxIQ.CUSTOM_PREFIX + own.id : category,
+        meta.label, own ? own.description : "", rows.length));
+    }
 
     if (!rows.length) {
       frag.appendChild(el("div", "iq-note", own
@@ -320,21 +614,7 @@
       if (own) frag.appendChild(deleteButton(own, handlers));
       return frag;
     }
-    var list = el("div", "iq-list");
-    rows.forEach(function (m) {
-      var button = el("button", "iq-msg");
-      button.type = "button";
-      var from = el("div", "iq-from");
-      from.appendChild(paint(el("span", "iq-from-name", m.from_name || m.from || "Unknown sender"), ink()));
-      from.appendChild(el("span", "iq-date", shortDate(m.date)));
-      button.appendChild(from);
-      button.appendChild(paint(el("div", "iq-subject", m.subject || "(no subject)"), ink()));
-      if (m.due_label) button.appendChild(el("div", "iq-due", m.due_label));
-      if (own && m.custom_reason) button.appendChild(reasonChip(m.custom_reason));
-      button.addEventListener("click", function () { handlers.onOpen(m); });
-      list.appendChild(button);
-    });
-    frag.appendChild(list);
+    frag.appendChild(rowsOrNote(state, rows, handlers, own ? function (m) { return m.custom_reason; } : null));
     if (own) frag.appendChild(deleteButton(own, handlers));
     return frag;
   }
@@ -370,13 +650,13 @@
 
   // Shown while the model works: a spinner, and a bar once the worker has
   // reported how many messages it is checking.
-  function aiBanner(state) {
+  function aiBanner(state, text) {
     var p = state.ai_progress;
     var banner = el("div", "iq-ai-banner");
     banner.setAttribute("role", "status");
     var top = el("div", "iq-ai-top");
     top.appendChild(el("span", "iq-spinner"));
-    top.appendChild(el("span", "iq-ai-text", "AI is sorting your mail"));
+    top.appendChild(el("span", "iq-ai-text", text || "AI is sorting your mail"));
     if (p && p.total) top.appendChild(el("span", "iq-ai-count", p.done + "/" + p.total));
     banner.appendChild(top);
     var bar = el("div", p && p.total ? "iq-progress" : "iq-progress iq-progress-busy");
@@ -427,8 +707,23 @@
       var matched = state.custom.reduce(function (n, c) { return n + c.count; }, 0);
       state.ai_note = reply.ai_error || ("AI put " + matched + " messages in your categories.");
     }
+    state.subs = reply.subs || {};
+    state.split_min = reply.split_min || 6;
     if (state.view && String(state.view).indexOf(InboxIQ.CUSTOM_PREFIX) === 0 && !findCustom(state, state.view)) {
       state.view = undefined; // that category was deleted
+    }
+    var picked = parseSubView(state.selected);
+    if (picked && !(state.subs[picked.parent] && subItems(state.subs[picked.parent]).some(function (s) { return s.id === picked.id; }))) {
+      state.selected = picked.parent;
+    }
+    if (typeof state.selected === "string" && state.selected.indexOf(InboxIQ.CUSTOM_PREFIX) === 0 && !findCustom(state, state.selected)) {
+      state.selected = undefined;
+    }
+    var where = parseSubView(state.view);
+    if (where && !state.subs[where.parent]) {
+      // The split (or its parent) is gone: show the parent, or the list.
+      state.view = where.parent.indexOf(InboxIQ.CUSTOM_PREFIX) === 0 && !findCustom(state, where.parent)
+        ? undefined : where.parent;
     }
   };
 
@@ -454,6 +749,7 @@
           return m.custom_category === id ? Object.assign({}, m, { custom_category: null, custom_reason: null }) : m;
         });
         state.view = undefined;
+        state.selected = undefined;
         send({ type: "custom:remove", id: id }, function (reply) {
           console.log("[InboxIQ] deleted; categories left:", (reply.custom || []).length);
           render();
@@ -467,6 +763,29 @@
         });
       },
       onSort: function () { send({ type: "custom:sort" }); },
+      onSplit: function (parent, label, description) {
+        if (!state.ai_ready) {
+          // The key form lives on the mailbox list.
+          state.view = undefined;
+          state.form = "key";
+          render();
+          return;
+        }
+        send({ type: "sub:split", parent: parent, label: label, description: description });
+      },
+      onRenameSub: function (parent, id, name) {
+        send({ type: "sub:rename", parent: parent, id: id, name: name }, function () {
+          state.form = null;
+          render();
+        });
+      },
+      // Like a category: gone from the view at once, the reply confirms it.
+      onRemoveSub: function (parent, id) {
+        if (state.listInGmail) state.selected = parent;
+        else state.view = parent;
+        state.form = null;
+        send({ type: "sub:remove", parent: parent, id: id });
+      },
       onToggleGroup: function (key) {
         state.collapsed = Object.assign({}, state.collapsed);
         state.collapsed[key] = !state.collapsed[key];
@@ -497,7 +816,7 @@
       chrome.storage.onChanged.addListener(function (changes, area) {
         if (area !== "local" || !changes.inboxiq_ai_progress) return;
         state.ai_progress = changes.inboxiq_ai_progress.newValue || null;
-        if (state.sorting) render();
+        if (state.sorting || state.splitting) render();
       });
     } catch (err) {
       // No extension storage (a plain page preview): the bar stays indeterminate.
