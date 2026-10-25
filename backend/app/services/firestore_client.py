@@ -542,6 +542,30 @@ def count_by_custom(uid: str) -> dict[str, int]:
     return counts
 
 
+# ---------------------------------------------------------------- subcategories
+
+# A category split into subcategories: one doc per parent ("promotion" or
+# "my:job_hunt") under users/<uid>/splits, holding the subcategories and each
+# email's place in them. Always written whole, so a deleted subcategory or
+# result really disappears.
+
+def _splits(uid: str):
+    return db().collection("users").document(uid).collection("splits")
+
+
+def get_split(uid: str, parent: str) -> dict | None:
+    snap = _splits(uid).document(parent).get()
+    return snap.to_dict() if snap.exists else None
+
+
+def set_split(uid: str, parent: str, subs: list[dict], results: dict[str, dict]) -> None:
+    _splits(uid).document(parent).set({"parent": parent, "subs": subs, "results": results})
+
+
+def delete_split(uid: str, parent: str) -> None:
+    _splits(uid).document(parent).delete()
+
+
 def set_due_date(uid: str, message_id: str, due_date: str | None, due_label: str | None) -> None:
     """Hook for extract_due_date. None clears a date left by an earlier run."""
     _emails(uid).document(message_id).set(

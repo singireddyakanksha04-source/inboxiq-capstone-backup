@@ -20,6 +20,7 @@ from app.services.classifier import MODELS
 
 MAX_CATEGORIES = 5
 BATCH_SIZE = 10
+AI_LIMIT = 50  # newest emails of a category looked at when splitting it
 MODEL = MODELS["small"]
 _PREVIEW_CHARS = 300
 _REASON_CHARS = 120
@@ -73,18 +74,19 @@ def _client():
     return Groq()
 
 
-def sort_batch(categories: list[dict], emails: list[dict], client=None) -> list[tuple[str | None, str]]:
-    """One (category id or None, reason) per email, in order."""
+def _ask(system: str, user: str, client=None) -> dict:
+    """One JSON-mode request; {} when the answer cannot be read."""
     client = client or _client()
     try:
         response = client.chat.completions.create(
             model=MODEL,
             temperature=0,
             max_tokens=1500,
+            reasoning_effort="low",  # fewer tokens per answer, so fewer rate-limit replies
             response_format={"type": "json_object"},
             messages=[
-                {"role": "system", "content": _SYSTEM},
-                {"role": "user", "content": _prompt(categories, emails)},
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
             ],
         )
         data = json.loads(response.choices[0].message.content or "{}")
@@ -96,10 +98,16 @@ def sort_batch(categories: list[dict], emails: list[dict], client=None) -> list[
         if getattr(e, "status_code", None) == 429:
             raise AIUnavailable("The AI is busy (rate limit). Try again in a minute.") from e
         raise AIUnavailable("AI sorting is unavailable right now.") from e
+    return data if isinstance(data, dict) else {}
+
+
+def sort_batch(categories: list[dict], emails: list[dict], client=None) -> list[tuple[str | None, str]]:
+    """One (category id or None, reason) per email, in order."""
+    data = _ask(_SYSTEM, _prompt(categories, emails), client)
 
     known = {c["id"] for c in categories}
     out: list[tuple[str | None, str]] = [(None, "")] * len(emails)
-    rows = data.get("results") if isinstance(data, dict) else None
+    rows = data.get("results")
     for row in rows if isinstance(rows, list) else []:
         if not isinstance(row, dict):
             continue
@@ -114,3 +122,56 @@ def sort_batch(categories: list[dict], emails: list[dict], client=None) -> list[
         if cid in known:
             out[i] = (cid, " ".join(str(row.get("reason") or "").split())[:_REASON_CHARS])
     return out
+
+
+# ---------------------------------------------------------------- subcategories
+
+# One category (built-in or the account's own) split into a few smaller ones.
+# The model proposes them from sender and subject of the emails already in the
+# category; the descriptions it writes then go through sort_batch like any
+# custom category, so each email gets a subcategory (or none: "Other").
+
+SPLIT_MIN = 6
+MAX_SUBS = 4
+# "Other", "Misc promotions", "General updates": the leftovers already have Other.
+_CATCH_ALL = re.compile(r"\b(other|others|misc|miscellaneous|general|everything else|rest)\b", re.I)
+
+_SPLIT_SYSTEM = (
+    "You split one email category into smaller subcategories. "
+    "You get the category's name, its description if there is one, and the sender and "
+    "subject of the emails in it. Suggest 2 to 4 subcategories that together cover most "
+    "of these emails and are clearly different from each other. Give each a short name "
+    "(1 to 3 words) and a one-sentence description of which emails belong in it. "
+    "Do not suggest a catch-all such as Other or Misc.\n"
+    'Reply with JSON only: {"subcategories": [{"name": <short name>, "description": <one sentence>}]}'
+)
+
+
+def _split_prompt(label: str, description: str, emails: list[dict]) -> str:
+    lines = [f"Category: {label}"]
+    if description:
+        lines.append(f"Description: {description}")
+    lines.append("\nEmails:")
+    lines += [f"[{i}] From: {e.get('sender', '')} | Subject: {e.get('subject', '')}" for i, e in enumerate(emails)]
+    return "\n".join(lines)
+
+
+def clean_subs(raw) -> list[dict]:
+    """Names to 30 characters, descriptions to 200; no empty, repeated or
+    catch-all names; at most MAX_SUBS. Fewer than two means no split."""
+    out: list[dict] = []
+    for s in raw if isinstance(raw, list) else []:
+        if not isinstance(s, dict) or len(out) >= MAX_SUBS:
+            continue
+        name = " ".join(str(s.get("name") or "").split())[:30]
+        description = " ".join(str(s.get("description") or "").split())[:200]
+        lower = name.lower()
+        if not name or not description or _CATCH_ALL.search(name) or any(o["name"].lower() == lower for o in out):
+            continue
+        out.append({"id": make_id(name, {o["id"] for o in out}), "name": name, "description": description})
+    return out if len(out) >= 2 else []
+
+
+def suggest_subcategories(label: str, description: str, emails: list[dict], client=None) -> list[dict]:
+    data = _ask(_SPLIT_SYSTEM, _split_prompt(label, description, emails), client)
+    return clean_subs(data.get("subcategories"))
