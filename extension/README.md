@@ -48,6 +48,14 @@ Scope: `gmail.readonly`.
 Only sender, subject and Gmail's preview are sent, ten messages per request.
 A message is not sent again until the category list changes.
 
+### Reply drafts
+
+Open an email and click **Draft reply with AI** in the panel. The text of
+that one email (without the earlier mail quoted under it) goes to the model,
+and the draft shows in the panel to edit. **Insert into Gmail** puts it at the
+top of Gmail's reply box; you read it and press Send yourself. InboxIQ never
+sends or saves mail.
+
 ## Layout
 
 | File | What it does |
@@ -55,6 +63,7 @@ A message is not sent again until the category list changes.
 | `src/categories.js` | Mailbox labels, colours and icons, in step with the web dashboard |
 | `src/classifier.js` | The rule classifier, ported from the backend |
 | `src/personal.js` | Your own categories: the AI prompt, batching and answer checks |
+| `src/reply.js` | Reply drafts: the prompt, reading the email's text, cleaning the draft |
 | `src/background.js` | Gmail sign-in, message fetching, sorting, caching |
 | `src/content.js` | Mounts the panel in Gmail's navigation and holds view state |
 | `src/panel.js` | Draws the mailbox list and the per-mailbox message list |
@@ -68,6 +77,7 @@ node extension/tests/classifier_parity.test.mjs   # same verdicts as the backend
 node extension/tests/background_scan.test.mjs     # scan, sort, count, token loss
 node extension/tests/personal_categories.test.mjs # own categories, AI sorting, failures
 node extension/tests/subcategories.test.mjs      # split a category, rename, delete, failures
+node extension/tests/reply_drafts.test.mjs       # reply drafts, email text, failures, read-only
 ```
 
 ## Limits

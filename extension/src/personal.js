@@ -82,7 +82,8 @@
     return 10000;
   }
 
-  async function ask(key, system, user) {
+  // temperature 0 unless asked: sorting must give the same answer every time.
+  async function ask(key, system, user, temperature) {
     var response;
     for (var attempt = 0; ; attempt++) {
       try {
@@ -91,7 +92,7 @@
           headers: { "Content-Type": "application/json", Authorization: "Bearer " + key },
           body: JSON.stringify({
             model: MODEL,
-            temperature: 0,
+            temperature: temperature || 0,
             max_tokens: 1500,
             reasoning_effort: "low",  // fewer tokens per answer, so fewer busy replies
             response_format: { type: "json_object" },
@@ -102,14 +103,14 @@
           }),
         });
       } catch (err) {
-        throw new Error("AI sorting is unavailable right now.");
+        throw new Error("The AI is unavailable right now.");
       }
       if (response.status !== 429 || attempt >= InboxIQ.RETRIES) break;
       await InboxIQ.sleep(Math.min(waitFor(response) + 500, InboxIQ.MAX_WAIT_MS));
     }
     if (response.status === 401) throw new Error("The Groq key was rejected. Check it and save it again.");
     if (response.status === 429) throw new Error("The AI is busy (rate limit). Try again in a minute.");
-    if (!response.ok) throw new Error("AI sorting is unavailable right now.");
+    if (!response.ok) throw new Error("The AI is unavailable right now.");
     try {
       var body = await response.json();
       return JSON.parse(body.choices[0].message.content || "{}") || {};
@@ -117,6 +118,7 @@
       return {};
     }
   }
+  InboxIQ.ask = ask;  // reply.js drafts replies through the same request
 
   // One { category: id|null, reason } per message, in order.
   InboxIQ.aiSortBatch = async function (key, categories, messages) {

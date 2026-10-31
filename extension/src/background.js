@@ -6,8 +6,9 @@
 // Built-in sorting is the local rule classifier and sends nothing anywhere.
 // The person's own categories (personal.js) are the one exception: when they
 // have added categories and their own Groq key, sender, subject and preview
-// of the newest messages go to the model to be sorted into them.
-importScripts("./classifier.js", "./personal.js");
+// of the newest messages go to the model to be sorted into them. A reply
+// draft (reply.js) sends the text of the one email the person asked about.
+importScripts("./classifier.js", "./personal.js", "./reply.js");
 // The developer's own Groq key, copied from .env by scripts/load_key.mjs.
 // Git-ignored, so a fresh checkout has no such file and falls back to a key
 // saved from the panel.
@@ -390,6 +391,46 @@ async function aiSort() {
   return result;
 }
 
+// --- reply drafts ------------------------------------------------------------
+//
+// The thread open in Gmail is read in full (read-only, like the scan) and the
+// model drafts a reply to its newest message from someone else. The draft is
+// handed back to the panel; it is never sent or saved to Gmail from here.
+
+async function draftReply(threadId, note, previous) {
+  if (!/^[0-9a-f]{6,24}$/i.test(String(threadId || ""))) throw new Error("Open an email first.");
+  var key = await aiKey();
+  if (!key) throw new Error("Add your Groq key to draft replies.");
+  var token = await getToken(false);
+  var saved = await cached();
+  var me = String((saved && saved.email) || "").toLowerCase();
+  var thread = await gmail(token, "/threads/" + threadId + "?format=full");
+  var messages = thread.messages || [];
+  var fromOf = function (m) { return parseFrom(header(m.payload, "from")); };
+  var mine = function (m) { return Boolean(me) && fromOf(m).address.toLowerCase() === me; };
+  var theirs = messages.filter(function (m) { return !mine(m); });
+  var target = theirs[theirs.length - 1] || messages[messages.length - 1];
+  if (!target) throw new Error("Couldn't read this email.");
+  // The person's own name as their earlier mail in this thread shows it.
+  var sent = messages.filter(mine)[0];
+  var ownerName = sent && fromOf(sent).name !== fromOf(sent).address ? fromOf(sent).name : "";
+  var from = fromOf(target);
+  var subject = header(target.payload, "subject");
+  var draft = await InboxIQ.draftReply(key, {
+    from: header(target.payload, "from"),
+    subject: subject,
+    text: InboxIQ.emailText(target.payload) || target.snippet || "",
+  }, ownerName, note, previous);
+  return { draft: {
+    thread_id: threadId,
+    to: from.address,
+    subject: subject,
+    text: draft.text,
+    needs_reply: draft.needs_reply,
+    options: draft.options,
+  } };
+}
+
 async function current() {
   return decorate((await cached()) || SIGNED_OUT);
 }
@@ -435,6 +476,10 @@ async function handle(message) {
   if (message.type === "sub:remove") {
     await removeSub(message.parent, message.id);
     return current();
+  }
+
+  if (message.type === "reply:draft") {
+    return draftReply(message.thread_id, message.note, message.previous);
   }
 
   if (message.type === "connect" || message.type === "scan") {

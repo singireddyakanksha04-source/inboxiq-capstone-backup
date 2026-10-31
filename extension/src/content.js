@@ -27,6 +27,9 @@
     view: undefined, // undefined = mailbox list, null = all mail, else category
     listInGmail: true,   // a picked mailbox shows in Gmail's own list on the right
     selected: undefined, // that mailbox (undefined = none, null = all sorted mail)
+    openThread: null,    // Gmail thread id of the email open on the right
+    reply: null,         // { loading } | { error } | { text, to, needs_reply, note } for that email
+    replyNote: "",       // the person's optional "what to say" for that email
     scanned: 0,
   };
 
@@ -41,6 +44,56 @@
       render();
     },
     onOpen: function (message) { openThread(message); },
+    onDraft: function () {
+      if (!state.ai_ready) {
+        state.form = "key"; // the key form sits under My categories
+        state.collapsed = Object.assign({}, state.collapsed, { mine: false });
+        render();
+        return;
+      }
+      var threadId = state.openThread;
+      // Redraft: the model is shown the draft on screen and writes another.
+      var previous = state.reply && state.reply.text ? state.reply.text : "";
+      state.reply = { loading: true };
+      render();
+      var message = { type: "reply:draft", thread_id: threadId, note: state.replyNote, previous: previous };
+      chrome.runtime.sendMessage(message, function (answer) {
+        if (state.openThread !== threadId) return; // the person moved on to another email
+        var failed = chrome.runtime.lastError ? chrome.runtime.lastError.message
+          : !answer ? "No answer from InboxIQ." : answer.error;
+        state.reply = failed ? { error: InboxIQ.friendlyError(failed) } : Object.assign({}, answer.draft);
+        render();
+      });
+    },
+    onDraftEdit: function (text) { if (state.reply) state.reply.text = text; },
+    onDraftNote: function (text) { state.replyNote = text; },
+    onPickOption: function (text) {
+      state.replyNote = text;
+      handlers.onDraft();
+    },
+    onCloseDraft: function () { state.reply = null; render(); },
+    onCopyDraft: function () {
+      copy(state.reply.text).then(function (ok) {
+        state.reply.note = ok ? "Copied." : "Couldn't copy. Select the text and copy it.";
+        render();
+      });
+    },
+    onInsertDraft: function () {
+      var text = state.reply.text;
+      insertReply(text).then(function (ok) {
+        if (ok) {
+          state.reply.note = "Added to Gmail's reply box. Read it, then press Send.";
+          render();
+          return;
+        }
+        copy(text).then(function (copied) {
+          state.reply.note = copied
+            ? "Couldn't find Gmail's reply box. The draft is copied; click Reply and paste it."
+            : "Couldn't find Gmail's reply box. Click Reply, then copy the draft in.";
+          render();
+        });
+      });
+    },
   };
 
   var custom = InboxIQ.customHandlers(state, send, render);
@@ -103,6 +156,95 @@
   function openThread(message) {
     if (!message.thread_id) return;
     location.hash = "#all/" + message.thread_id;
+  }
+
+  // --- the email open in Gmail -------------------------------------------------
+  //
+  // Gmail puts the open thread's API id on its subject heading. A list view has
+  // no such heading, and Gmail keeps hidden copies of earlier threads around,
+  // so only a heading that is actually on screen counts.
+  function visible(node) {
+    var box = node.getBoundingClientRect();
+    return box.width > 0 && box.height > 0;
+  }
+
+  function currentThread() {
+    var heads = document.querySelectorAll("h2[data-legacy-thread-id]");
+    for (var i = 0; i < heads.length; i++) {
+      if (visible(heads[i])) return heads[i].getAttribute("data-legacy-thread-id");
+    }
+    return null;
+  }
+
+  function watchThread() {
+    var id = currentThread();
+    if (id === state.openThread) return;
+    state.openThread = id;
+    state.reply = null; // a draft belongs to the email it was written for
+    state.replyNote = "";
+    render();
+  }
+
+  // Gmail's reply editor. A pop-out compose window is left alone: the draft
+  // is for the open thread's inline reply.
+  function replyBox() {
+    var boxes = document.querySelectorAll('div[contenteditable="true"][role="textbox"]');
+    for (var i = boxes.length - 1; i >= 0; i--) {
+      if (visible(boxes[i]) && !boxes[i].closest('[role="dialog"]')) return boxes[i];
+    }
+    return null;
+  }
+
+  // Gmail's own Reply button under the newest message. Gmail reacts to the
+  // mouse events, not just click.
+  function pressReply() {
+    var buttons = document.querySelectorAll(
+      '[role="button"][data-tooltip="Reply"], [role="button"][aria-label="Reply"], span.ams.bkH');
+    for (var i = buttons.length - 1; i >= 0; i--) {
+      if (!visible(buttons[i])) continue;
+      ["mousedown", "mouseup", "click"].forEach(function (type) {
+        buttons[i].dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+      });
+      return true;
+    }
+    return false;
+  }
+
+  function waitFor(find, ms) {
+    return new Promise(function (resolve) {
+      var start = Date.now();
+      (function poll() {
+        var hit = find();
+        if (hit || Date.now() - start > ms) return resolve(hit);
+        setTimeout(poll, 150);
+      })();
+    });
+  }
+
+  // Puts the draft at the top of the reply box, above Gmail's signature and
+  // quoted text, as if typed - so Gmail saves it as its own draft. Never sends.
+  function insertReply(text) {
+    var box = replyBox();
+    var opened = box ? Promise.resolve(box) : (pressReply() ? waitFor(replyBox, 3000) : Promise.resolve(null));
+    return opened.then(function (target) {
+      if (!target) return false;
+      target.focus();
+      var range = document.createRange();
+      range.setStart(target, 0);
+      range.collapse(true);
+      var selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return document.execCommand("insertText", false, text + "\n\n");
+    });
+  }
+
+  function copy(text) {
+    try {
+      return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return false; });
+    } catch (err) {
+      return Promise.resolve(false);
+    }
   }
 
   var host = null;  // the element placed in Gmail's page
@@ -315,7 +457,7 @@
   scheduleMount();
   // Gmail resizes and collapses its column without touching the page body,
   // so re-measure on a timer as well as on window changes.
-  setInterval(mount, 500);
+  setInterval(function () { mount(); watchThread(); }, 500);
   window.addEventListener("resize", scheduleMount);
 
   console.log("[InboxIQ] content script running on", location.href);

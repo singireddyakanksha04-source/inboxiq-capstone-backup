@@ -823,6 +823,93 @@
     }
   };
 
+  // --- reply drafts ------------------------------------------------------------
+  //
+  // Shown while an email is open in Gmail. The draft stays editable here; it
+  // only reaches Gmail's reply box when the person inserts it, and they send it.
+
+  function replyCard(state, handlers) {
+    var reply = state.reply;
+    var card = el("section", "iq-reply");
+    card.setAttribute("aria-label", "Reply draft");
+    if (!reply) {
+      card.appendChild(noteField(state, handlers));
+      var start = el("button", "iq-split-btn iq-with-icon");
+      start.type = "button";
+      start.appendChild(InboxIQ.icon("sparkle", 12, 2.2));
+      start.appendChild(el("span", null, state.ai_ready ? "Draft reply with AI" : "Add AI key to draft replies"));
+      start.addEventListener("click", handlers.onDraft);
+      card.appendChild(start);
+      return card;
+    }
+    if (reply.loading) {
+      card.appendChild(aiBanner({}, "AI is writing a reply"));
+      return card;
+    }
+    if (reply.error) {
+      card.appendChild(el("div", "iq-note iq-error", reply.error));
+      card.appendChild(noteField(state, handlers));
+      card.appendChild(replyActions(handlers, false));
+      return card;
+    }
+    if (!reply.needs_reply) card.appendChild(aiNote("This looks automatic; it may not need a reply."));
+    var box = keepKeys(el("textarea", "iq-reply-text"));
+    box.rows = 8;
+    box.value = reply.text;
+    box.setAttribute("aria-label", "Reply to " + (reply.to || "the sender"));
+    box.addEventListener("input", function () { handlers.onDraftEdit(box.value); });
+    card.appendChild(field(reply.to ? "Reply to " + reply.to : "Reply", box));
+    card.appendChild(noteField(state, handlers));
+    if ((reply.options || []).length) card.appendChild(optionChips(reply.options, handlers));
+    card.appendChild(replyActions(handlers, true));
+    if (reply.note) card.appendChild(el("div", "iq-hint", reply.note));
+    return card;
+  }
+
+  // Optional: what the person wants the reply to say. Kept for Redraft.
+  function noteField(state, handlers) {
+    var note = keepKeys(el("textarea"));
+    note.rows = 2;
+    note.maxLength = 300;
+    note.placeholder = "Yes, but Friday works better";
+    note.value = state.replyNote || "";
+    note.addEventListener("input", function () { handlers.onDraftNote(note.value); });
+    return field("What to say (optional)", note);
+  }
+
+  // The model's suggestions for what else to say; one click redrafts with it.
+  function optionChips(options, handlers) {
+    var row = el("div", "iq-chips iq-reply-options");
+    row.setAttribute("aria-label", "Other things to say");
+    options.forEach(function (text) {
+      var chip = el("button", "iq-chip", text);
+      chip.type = "button";
+      chip.addEventListener("click", function () { handlers.onPickOption(text); });
+      row.appendChild(chip);
+    });
+    return row;
+  }
+
+  function replyActions(handlers, ready) {
+    var row = el("div", "iq-form-actions iq-reply-actions");
+    function link(label, onClick) {
+      var button = el("button", "iq-link", label);
+      button.type = "button";
+      button.addEventListener("click", onClick);
+      row.appendChild(button);
+    }
+    link("Close", handlers.onCloseDraft);
+    link("Redraft", handlers.onDraft);
+    if (ready) {
+      link("Copy", handlers.onCopyDraft);
+      var insert = el("button", "iq-connect iq-small", "Insert into Gmail");
+      insert.type = "button";
+      insert.addEventListener("click", handlers.onInsertDraft);
+      row.appendChild(insert);
+    }
+    return row;
+  }
+
   // The panel and the worker are separate pieces of the extension; after an
   // update, an old worker does not know the new requests until reloaded.
   InboxIQ.friendlyError = function (message) {
@@ -850,6 +937,7 @@
     }
 
     if (state.status) root.appendChild(el("div", "iq-note", state.status));
+    if (state.openThread) root.appendChild(replyCard(state, handlers));
 
     if (state.view === undefined) root.appendChild(mailboxView(state, handlers));
     else root.appendChild(messageView(state, handlers));
