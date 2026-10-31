@@ -74,13 +74,14 @@ def _client():
     return Groq()
 
 
-def _ask(system: str, user: str, client=None) -> dict:
-    """One JSON-mode request; {} when the answer cannot be read."""
+def _ask(system: str, user: str, client=None, temperature: float = 0) -> dict:
+    """One JSON-mode request; {} when the answer cannot be read. Temperature 0
+    unless asked: sorting must give the same answer every time."""
     client = client or _client()
     try:
         response = client.chat.completions.create(
             model=MODEL,
-            temperature=0,
+            temperature=temperature,
             max_tokens=1500,
             reasoning_effort="low",  # fewer tokens per answer, so fewer rate-limit replies
             response_format={"type": "json_object"},
@@ -97,7 +98,7 @@ def _ask(system: str, user: str, client=None) -> dict:
     except Exception as e:  # SDK errors: rate limit, network, bad key
         if getattr(e, "status_code", None) == 429:
             raise AIUnavailable("The AI is busy (rate limit). Try again in a minute.") from e
-        raise AIUnavailable("AI sorting is unavailable right now.") from e
+        raise AIUnavailable("The AI is unavailable right now.") from e
     return data if isinstance(data, dict) else {}
 
 
