@@ -810,6 +810,32 @@
     }
   };
 
+  // How replies should sound, as the person picked it last time. The first
+  // choice of each is the default; the worker checks the values again.
+  InboxIQ.REPLY_STYLE = {
+    tone: [["friendly", "Friendly"], ["formal", "Formal"]],
+    length: [["short", "Short"], ["detailed", "Detailed"]],
+  };
+
+  InboxIQ.loadReplyStyle = function (state, render) {
+    try {
+      chrome.storage.local.get("inboxiq_reply_style").then(function (stored) {
+        var saved = (stored && stored.inboxiq_reply_style) || {};
+        Object.keys(InboxIQ.REPLY_STYLE).forEach(function (key) {
+          var known = InboxIQ.REPLY_STYLE[key].some(function (c) { return c[0] === saved[key]; });
+          if (known) state.replyStyle[key] = saved[key];
+        });
+        render();
+      }, function () {});
+    } catch (err) {
+      // No extension storage (a plain page preview): the defaults stay.
+    }
+  };
+
+  InboxIQ.saveReplyStyle = function (style) {
+    try { chrome.storage.local.set({ inboxiq_reply_style: style }); } catch (err) {}
+  };
+
   // Progress of a running AI sort, written by the worker after each batch.
   InboxIQ.watchProgress = function (state, render) {
     try {
@@ -834,6 +860,7 @@
     card.setAttribute("aria-label", "Reply draft");
     if (!reply) {
       card.appendChild(noteField(state, handlers));
+      card.appendChild(styleRow(state, handlers));
       var start = el("button", "iq-split-btn iq-with-icon");
       start.type = "button";
       start.appendChild(InboxIQ.icon("sparkle", 12, 2.2));
@@ -849,6 +876,7 @@
     if (reply.error) {
       card.appendChild(el("div", "iq-note iq-error", reply.error));
       card.appendChild(noteField(state, handlers));
+      card.appendChild(styleRow(state, handlers));
       card.appendChild(replyActions(handlers, false));
       return card;
     }
@@ -861,6 +889,7 @@
     card.appendChild(field(reply.to ? "Reply to " + reply.to : "Reply", box));
     card.appendChild(noteField(state, handlers));
     if ((reply.options || []).length) card.appendChild(optionChips(reply.options, handlers));
+    card.appendChild(styleRow(state, handlers));
     card.appendChild(replyActions(handlers, true));
     if (reply.note) card.appendChild(el("div", "iq-hint", reply.note));
     return card;
@@ -886,6 +915,27 @@
       chip.type = "button";
       chip.addEventListener("click", function () { handlers.onPickOption(text); });
       row.appendChild(chip);
+    });
+    return row;
+  }
+
+  // Tone and length, one choice each. Changing one rewrites a draft on screen.
+  function styleRow(state, handlers) {
+    var row = el("div", "iq-reply-style");
+    [["tone", "Tone"], ["length", "Length"]].forEach(function (pair) {
+      var group = el("div", "iq-chips iq-seg");
+      group.setAttribute("role", "group");
+      group.setAttribute("aria-label", pair[1]);
+      group.appendChild(el("span", "iq-seg-label", pair[1]));
+      InboxIQ.REPLY_STYLE[pair[0]].forEach(function (choice) {
+        var on = state.replyStyle[pair[0]] === choice[0];
+        var chip = el("button", "iq-chip" + (on ? " is-on" : ""), choice[1]);
+        chip.type = "button";
+        chip.setAttribute("aria-pressed", on ? "true" : "false");
+        chip.addEventListener("click", function () { handlers.onReplyStyle(pair[0], choice[0]); });
+        group.appendChild(chip);
+      });
+      row.appendChild(group);
     });
     return row;
   }

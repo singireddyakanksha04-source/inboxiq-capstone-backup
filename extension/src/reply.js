@@ -1,10 +1,11 @@
 // Reply drafts. The person opens an email in Gmail and asks for a draft; the
-// worker reads that one email and the Groq model writes a reply in their name.
+// worker reads that email, with the thread's earlier mail kept short, and the
+// Groq model writes a reply in their name, in the tone and length they pick.
 // The draft only ever goes into Gmail's reply box (or the clipboard): the
 // person reads it, edits it and presses Send themselves. Nothing is sent here.
 //
 // Unlike sorting, a draft needs the email's text, not just its preview. That
-// text goes to the model only for the email the person asked about, only when
+// text goes to the model only for the thread the person asked about, only when
 // they ask.
 (function (InboxIQ) {
   InboxIQ.REPLY_TEXT_CHARS = 4000;  // longer emails are cut; the start says what is asked
@@ -13,12 +14,27 @@
   // A first draft is steady; Redraft is told what it wrote before and may vary.
   InboxIQ.REDRAFT_TEMPERATURE = 0.8;
   InboxIQ.REPLY_OPTIONS = 3;         // suggested "what to say" choices per draft
+  // The person's choice of how the reply sounds; the first of each is the default.
+  InboxIQ.REPLY_TONES = ["friendly", "formal"];
+  InboxIQ.REPLY_LENGTHS = ["short", "detailed"];
+  // Earlier mail in the thread, newest kept first when it does not all fit.
+  InboxIQ.REPLY_THREAD_MESSAGES = 5;
+  InboxIQ.REPLY_THREAD_EACH = 600;
+  InboxIQ.REPLY_THREAD_CHARS = 2500;
 
   var REPLY_SYSTEM =
     "You write email replies for the user. You get one email they received: who sent it, " +
     "the subject and its text. Write the reply the user would send. Answer what the email " +
-    "asks, in plain and polite language, in the same language as the email. Keep it short " +
-    "(under 120 words) unless the email really needs more. Never make up facts, dates, times, " +
+    "asks, in plain and polite language, in the same language as the email. Write in the " +
+    "tone and length the user picks. Friendly: warm and relaxed, contractions are fine. " +
+    "Formal: polite and professional, no slang or contractions. Short: under 80 words. " +
+    "Detailed: 100 to 180 words, each point the email raises answered in full sentences; " +
+    "never add plans, offers or promises just to make it longer. Keep track of who asks " +
+    "whom: when the sender asks the user to do something, say whether the user will. " +
+    "When the email asks the user to pick between options, do not pick: put them in " +
+    "square brackets, like [a room or online]. You may also get " +
+    "earlier messages of the thread, oldest first: use them to know what was already said " +
+    "and agreed, but reply to the newest email only and do not repeat what is settled. Never make up facts, dates, times, " +
     "prices, links or promises. Never choose a time, date or option for the user that the " +
     "email does not fix already; put what the user has to fill in in square brackets, like " +
     "[day and time]. Do not repeat the subject or quote the email. Start with a greeting " +
@@ -38,15 +54,46 @@
     return String(note || "").replace(/\s+/g, " ").trim().slice(0, InboxIQ.REPLY_NOTE_CHARS);
   };
 
-  InboxIQ.replyPrompt = function (email, ownerName, note, previous) {
+  // { tone, length }, anything unknown replaced by the default.
+  InboxIQ.cleanStyle = function (style) {
+    style = style || {};
+    return {
+      tone: InboxIQ.REPLY_TONES.indexOf(style.tone) >= 0 ? style.tone : InboxIQ.REPLY_TONES[0],
+      length: InboxIQ.REPLY_LENGTHS.indexOf(style.length) >= 0 ? style.length : InboxIQ.REPLY_LENGTHS[0],
+    };
+  };
+
+  // The earlier messages, [{ from, text }] oldest first, as prompt lines. Each is
+  // cut short; when they do not all fit, the oldest are left out.
+  InboxIQ.threadContext = function (earlier) {
+    var blocks = [];
+    var used = 0;
+    var list = (Array.isArray(earlier) ? earlier : []).slice(-InboxIQ.REPLY_THREAD_MESSAGES);
+    for (var i = list.length - 1; i >= 0; i--) {
+      var text = String((list[i] && list[i].text) || "").trim().slice(0, InboxIQ.REPLY_THREAD_EACH);
+      if (!text) continue;
+      var block = "From: " + (list[i].from || "") + "\n" + text;
+      if (used + block.length > InboxIQ.REPLY_THREAD_CHARS) break;
+      used += block.length;
+      blocks.unshift(block);
+    }
+    return blocks;
+  };
+
+  InboxIQ.replyPrompt = function (email, ownerName, note, previous, style) {
     var text = String(email.text || "").trim().slice(0, InboxIQ.REPLY_TEXT_CHARS);
+    style = InboxIQ.cleanStyle(style);
     var lines = [
       "From: " + (email.from || ""),
       "Subject: " + (email.subject || ""),
       "The user's name: " + (ownerName || "not given"),
+      "Tone: " + style.tone,
+      "Length: " + style.length,
     ];
     note = InboxIQ.cleanNote(note);
     if (note) lines.push("What the user wants to say: " + note);
+    var thread = InboxIQ.threadContext(email.thread);
+    if (thread.length) lines.push("", "Earlier in this thread (oldest first):", thread.join("\n\n"));
     lines = lines.concat(["", "Email text:", text || "(no text, only the subject)"]);
     previous = InboxIQ.cleanReply(previous);
     if (previous) lines.push("", "Earlier draft (write a different one):", previous);
@@ -78,10 +125,11 @@
 
   // { text, needs_reply, options }. Throws when the model cannot be reached or gives
   // back nothing usable.
-  // `previous`, when given, is the draft the person asked to redraft.
-  InboxIQ.draftReply = async function (key, email, ownerName, note, previous) {
+  // `previous`, when given, is the draft the person asked to redraft; `style` is
+  // { tone, length }. `email.thread` holds the earlier messages, if any.
+  InboxIQ.draftReply = async function (key, email, ownerName, note, previous, style) {
     var redraft = Boolean(InboxIQ.cleanReply(previous));
-    var data = await InboxIQ.ask(key, REPLY_SYSTEM, InboxIQ.replyPrompt(email, ownerName, note, previous),
+    var data = await InboxIQ.ask(key, REPLY_SYSTEM, InboxIQ.replyPrompt(email, ownerName, note, previous, style),
       redraft ? InboxIQ.REDRAFT_TEMPERATURE : 0);
     var text = InboxIQ.cleanReply(data && data.reply);
     if (!text) throw new Error("Couldn't write a reply for this email. Try again.");

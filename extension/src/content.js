@@ -30,6 +30,7 @@
     openThread: null,    // Gmail thread id of the email open on the right
     reply: null,         // { loading } | { error } | { text, to, needs_reply, note } for that email
     replyNote: "",       // the person's optional "what to say" for that email
+    replyStyle: { tone: "friendly", length: "short" }, // kept across emails and visits
     scanned: 0,
   };
 
@@ -56,7 +57,8 @@
       var previous = state.reply && state.reply.text ? state.reply.text : "";
       state.reply = { loading: true };
       render();
-      var message = { type: "reply:draft", thread_id: threadId, note: state.replyNote, previous: previous };
+      var message = { type: "reply:draft", thread_id: threadId, note: state.replyNote, previous: previous,
+        tone: state.replyStyle.tone, length: state.replyStyle.length };
       chrome.runtime.sendMessage(message, function (answer) {
         if (state.openThread !== threadId) return; // the person moved on to another email
         var failed = chrome.runtime.lastError ? chrome.runtime.lastError.message
@@ -70,6 +72,15 @@
     onPickOption: function (text) {
       state.replyNote = text;
       handlers.onDraft();
+    },
+    onReplyStyle: function (key, value) {
+      if (state.replyStyle[key] === value) return;
+      state.replyStyle = Object.assign({}, state.replyStyle);
+      state.replyStyle[key] = value;
+      InboxIQ.saveReplyStyle(state.replyStyle);
+      // A draft on screen is written again in the new style.
+      if (state.reply && state.reply.text) handlers.onDraft();
+      else render();
     },
     onCloseDraft: function () { state.reply = null; render(); },
     onCopyDraft: function () {
@@ -463,6 +474,7 @@
   console.log("[InboxIQ] content script running on", location.href);
 
   InboxIQ.loadGroups(state, render);
+  InboxIQ.loadReplyStyle(state, render);
   InboxIQ.watchProgress(state, render);
 
   // Ask for whatever the worker already has; it answers signed-out without

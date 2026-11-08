@@ -397,7 +397,7 @@ async function aiSort() {
 // model drafts a reply to its newest message from someone else. The draft is
 // handed back to the panel; it is never sent or saved to Gmail from here.
 
-async function draftReply(threadId, note, previous) {
+async function draftReply(threadId, note, previous, style) {
   if (!/^[0-9a-f]{6,24}$/i.test(String(threadId || ""))) throw new Error("Open an email first.");
   var key = await aiKey();
   if (!key) throw new Error("Add your Groq key to draft replies.");
@@ -416,11 +416,17 @@ async function draftReply(threadId, note, previous) {
   var ownerName = sent && fromOf(sent).name !== fromOf(sent).address ? fromOf(sent).name : "";
   var from = fromOf(target);
   var subject = header(target.payload, "subject");
+  var textOf = function (m) { return InboxIQ.emailText(m.payload) || m.snippet || ""; };
+  // What came before it in the thread, so the reply knows what was said.
+  var earlier = messages.slice(0, messages.indexOf(target)).map(function (m) {
+    return { from: mine(m) ? "the user" : header(m.payload, "from"), text: textOf(m) };
+  });
   var draft = await InboxIQ.draftReply(key, {
     from: header(target.payload, "from"),
     subject: subject,
-    text: InboxIQ.emailText(target.payload) || target.snippet || "",
-  }, ownerName, note, previous);
+    text: textOf(target),
+    thread: earlier,
+  }, ownerName, note, previous, style);
   return { draft: {
     thread_id: threadId,
     to: from.address,
@@ -479,7 +485,8 @@ async function handle(message) {
   }
 
   if (message.type === "reply:draft") {
-    return draftReply(message.thread_id, message.note, message.previous);
+    return draftReply(message.thread_id, message.note, message.previous,
+      { tone: message.tone, length: message.length });
   }
 
   if (message.type === "connect" || message.type === "scan") {
