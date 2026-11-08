@@ -118,6 +118,16 @@ def get_email(uid: str, message_id: str) -> dict | None:
     return snap.to_dict() if snap.exists else None
 
 
+def thread_emails(uid: str, thread_id: str) -> list[dict]:
+    """The stored mail of one Gmail thread, oldest first. Sorted here, so the
+    query needs no composite index."""
+    if not thread_id:
+        return []
+    q = _emails(uid).where(filter=firestore.FieldFilter("thread_id", "==", thread_id))
+    docs = [d.to_dict() for d in q.stream()]
+    return sorted((d for d in docs if d.get("date")), key=lambda d: d["date"])
+
+
 def list_emails(uid: str, limit: int = 20, category: str | None = None) -> list[dict]:
     q = _emails(uid)
     if category and category.startswith(CUSTOM_PREFIX):

@@ -21,14 +21,23 @@ def draft(
     name: str = Query("", max_length=60),
     note: str = Query("", max_length=300),
     previous: str = Query("", max_length=2000),
+    tone: str = Query(reply_ai.TONES[0], pattern="^(" + "|".join(reply_ai.TONES) + ")$"),
+    length: str = Query(reply_ai.LENGTHS[0], pattern="^(" + "|".join(reply_ai.LENGTHS) + ")$"),
 ):
     """The draft is only returned, never sent. A model failure is reported in
     `error` so the page can offer Try again."""
     email = fs.get_email(uid, email_id)
     if not email:
         raise HTTPException(404, "email not found")
+    me = str((fs.get_user(uid) or {}).get("email") or "").lower()
+    # What came before it in the thread, so the reply knows what was said.
+    earlier = [{"from": "the user" if me and str(e.get("sender_email") or "").lower() == me else e.get("sender", ""),
+                "text": reply_ai.email_text(e)}
+               for e in fs.thread_emails(uid, email.get("thread_id") or "")
+               if e.get("id") != email_id and email.get("date") and e["date"] < email["date"]]
     try:
-        result = reply_ai.draft_reply(email, " ".join(name.split()), note, previous)
+        result = reply_ai.draft_reply(email, " ".join(name.split()), note, previous,
+                                      {"tone": tone, "length": length}, earlier)
     except AIUnavailable as e:
         return {"draft": None, "error": str(e)}
     return {"draft": {"email_id": email_id, "to": email.get("sender_email") or "",
