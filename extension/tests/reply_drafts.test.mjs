@@ -129,11 +129,16 @@ const prompt = groqCalls[0].user;
 check(() => assert.ok(prompt.includes("From: Priya Shah <priya@example.com>")));
 check(() => assert.ok(prompt.includes("Subject: Re: Project sync")));
 check(() => assert.ok(prompt.includes("could we do Thursday at 3? Café is fine too."), "UTF-8 text is decoded"));
-check(() => assert.ok(!prompt.includes("any afternoon") && !prompt.includes("wrote:"), "quoted mail is left out"));
+const newest = prompt.slice(prompt.indexOf("Email text:"));
+check(() => assert.ok(!newest.includes("any afternoon") && !prompt.includes("wrote:"), "quoted mail is left out"));
 check(() => assert.ok(!prompt.includes("HTML VERSION"), "plain text wins over HTML"));
 check(() => assert.ok(prompt.includes("The user's name: Sam Rivera"), "name taken from the owner's own mail"));
-check(() => assert.ok(!prompt.includes("Are you free"), "only the message being answered is sent"));
+const earlierAt = prompt.indexOf("Earlier in this thread (oldest first):\nFrom: Priya Shah <priya@example.com>\n" +
+  "Are you free this week for a sync?\n\nFrom: the user\nYes, any afternoon works.");
+check(() => assert.ok(earlierAt > 0 && earlierAt < prompt.indexOf("Email text:"),
+  "the earlier mail comes first, oldest first, the user's own marked"));
 check(() => assert.match(groqCalls[0].system, /Never make up/));
+check(() => assert.ok(prompt.includes("Tone: friendly\nLength: short"), "the default style"));
 check(() => assert.ok(!prompt.includes("What the user wants to say"), "no note, no note line"));
 
 // --- the person's own note ----------------------------------------------------------------
@@ -176,6 +181,34 @@ answer = { reply: "Subject: Re: Note\n\nSure.", needs_reply: "yes" };
 r = await draft("18c0aa11bb22cc55");
 check(() => assert.equal(r.draft.text, "Sure.", "a repeated subject line is dropped"));
 check(() => assert.equal(r.draft.needs_reply, true, "only an explicit false means no reply"));
+
+// --- tone and length -----------------------------------------------------------------------
+
+answer = { reply: "Dear Priya,\n\nThank you.", needs_reply: true };
+await send({ type: "reply:draft", thread_id: "18c0aa11bb22cc33", tone: "formal", length: "detailed" });
+check(() => assert.ok(groqCalls.at(-1).user.includes("Tone: formal\nLength: detailed"), "the picked style is sent"));
+check(() => assert.match(groqCalls.at(-1).system, /Formal: polite and professional/));
+check(() => assert.match(groqCalls.at(-1).system, /Detailed: 100 to 180 words/));
+await send({ type: "reply:draft", thread_id: "18c0aa11bb22cc33", tone: "angry", length: 7 });
+check(() => assert.ok(groqCalls.at(-1).user.includes("Tone: friendly\nLength: short"), "unknown values fall back"));
+check(() => assert.deepEqual(InboxIQ.cleanStyle({ tone: "formal" }), { tone: "formal", length: "short" }));
+check(() => assert.deepEqual(InboxIQ.cleanStyle(null), { tone: "friendly", length: "short" }));
+
+// --- the earlier thread ----------------------------------------------------------------------
+
+check(() => assert.ok(!groqCalls.find((c) => c.user.includes("Buy milk")).user.includes("Earlier in this thread"),
+  "a thread of one message has no earlier part"));
+check(() => {
+  const earlier = Array.from({ length: 9 }, (_, i) => ({ from: "P" + i, text: "m" + i + " " + "z".repeat(900) }));
+  const blocks = InboxIQ.threadContext(earlier);
+  assert.ok(blocks.length <= InboxIQ.REPLY_THREAD_MESSAGES && blocks.length > 0);
+  assert.ok(blocks.at(-1).startsWith("From: P8\nm8"), "the newest earlier message is kept");
+  assert.ok(!blocks.some((b) => b.includes("m0 ")), "the oldest are left out");
+  assert.ok(blocks.every((b) => b.length <= InboxIQ.REPLY_THREAD_EACH + 20), "each one is cut short");
+  assert.ok(blocks.join("").length <= InboxIQ.REPLY_THREAD_CHARS);
+});
+check(() => assert.deepEqual(InboxIQ.threadContext([{ from: "a", text: "  " }, null, "x"]), [], "empty ones are skipped"));
+check(() => assert.deepEqual(InboxIQ.threadContext(undefined), []));
 
 // --- long emails are cut -----------------------------------------------------------------
 

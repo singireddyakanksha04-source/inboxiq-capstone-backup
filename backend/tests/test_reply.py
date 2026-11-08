@@ -1,6 +1,6 @@
 """Reply drafts for one stored email. The model is faked, so these run offline."""
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -50,7 +50,7 @@ def env(monkeypatch):
     ai = FakeAI()
     monkeypatch.setattr(personal_ai, "_client", lambda: ai)
     f.put_email(UID, doc("m1"))
-    f.put_email(UID, doc("m2", body_text="", snippet="Your order has shipped", sender="Shop <o@shop.example>",
+    f.put_email(UID, doc("m2", thread_id="t2", body_text="", snippet="Your order has shipped", sender="Shop <o@shop.example>",
                          sender_email="o@shop.example", subject="Order shipped"))
     from app.main import app
     return TestClient(app), f, ai
@@ -97,6 +97,49 @@ def test_redraft_shows_the_earlier_draft_and_may_vary(env):
     assert "Earlier draft" not in ai.calls[0][1]
     assert ai.calls[1][1].endswith("Earlier draft (write a different one):\nHi Priya,\n\nThursday works.")
     assert draft(c, previous="x" * 2001).status_code == 422
+
+
+def test_tone_and_length(env):
+    c, _, ai = env
+    draft(c)
+    assert "Tone: friendly\nLength: short" in ai.calls[0][1]
+    draft(c, tone="formal", length="detailed")
+    assert "Tone: formal\nLength: detailed" in ai.calls[1][1]
+    assert draft(c, tone="angry").status_code == 422
+    assert draft(c, length="long").status_code == 422
+    assert reply_ai.clean_style({"tone": "formal", "length": 7}) == {"tone": "formal", "length": "short"}
+    assert reply_ai.clean_style(None) == {"tone": "friendly", "length": "short"}
+
+
+def test_earlier_thread_goes_first(env):
+    c, f, ai = env
+    f.docs[("users", UID)] = {"email": "Sam@Example.com"}
+    now = datetime.now(timezone.utc)
+    f.put_email(UID, doc("m0", body_text="Are you free this week?", date=now - timedelta(days=2)))
+    f.put_email(UID, doc("m0b", sender="Sam Rivera <sam@example.com>", sender_email="sam@example.com",
+                         body_text="Yes, any afternoon.\n> Are you free this week?", date=now - timedelta(days=1)))
+    f.put_email(UID, doc("m9", body_text="LATER MAIL", date=now + timedelta(days=1)))
+    f.put_email(UID, doc("x1", thread_id="other", body_text="OTHER THREAD", date=now - timedelta(days=3)))
+    writes = len(f.writes)
+    draft(c)
+    prompt = ai.calls[0][1]
+    assert ("Earlier in this thread (oldest first):\nFrom: Priya Shah <priya@example.com>\nAre you free this week?"
+            "\n\nFrom: the user\nYes, any afternoon.\n\nEmail text:") in prompt
+    assert "LATER MAIL" not in prompt and "OTHER THREAD" not in prompt
+    draft(c, "m2")
+    assert "Earlier in this thread" not in ai.calls[1][1]  # a thread of one
+    assert len(f.writes) == writes
+
+
+def test_thread_context_keeps_the_newest():
+    earlier = [{"from": f"P{i}", "text": f"m{i} " + "z" * 900} for i in range(9)]
+    blocks = reply_ai.thread_context(earlier)
+    assert 0 < len(blocks) <= reply_ai.THREAD_MESSAGES and blocks[-1].startswith("From: P8\nm8")
+    assert not any("m0 " in b for b in blocks)
+    assert all(len(b) <= reply_ai.THREAD_EACH + 20 for b in blocks)
+    assert len("".join(blocks)) <= reply_ai.THREAD_CHARS
+    assert reply_ai.thread_context([{"from": "a", "text": " "}, None, "x"]) == []
+    assert reply_ai.thread_context(None) == []
 
 
 def test_no_body_uses_the_preview_and_no_name(env):
@@ -159,7 +202,8 @@ def test_same_prompt_as_the_extension():
     js = (Path(__file__).resolve().parents[2] / "extension" / "src" / "reply.js").read_text()
     js = js.replace('" +\n    "', "").replace('" +\n    \'', "").replace("' +\n    '", "")
     for line in ("You write email replies for the user.", "Never make up facts, dates, times, prices, links",
-                 "Keep it short (under 120 words)", "Never choose a time, date or option for the user",
+                 "Formal: polite and professional, no slang or contractions", "Short: under 80 words",
+                 "Detailed: 100 to 180 words", "Keep track of who asks whom", "do not pick: put them in square brackets", "reply to the newest email only", "Never choose a time, date or option for the user",
                  "build the reply around that and follow it over your own guess",
                  "If you are shown an earlier draft, the user wants a different one",
                  "other things the user might want to say instead",

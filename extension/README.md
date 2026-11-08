@@ -50,9 +50,12 @@ A message is not sent again until the category list changes.
 
 ### Reply drafts
 
-Open an email and click **Draft reply with AI** in the panel. The text of
-that one email (without the earlier mail quoted under it) goes to the model,
-and the draft shows in the panel to edit. **Insert into Gmail** puts it at the
+Open an email and click **Draft reply with AI** in the panel. Pick a tone
+(Friendly or Formal) and a length (Short or Detailed); the choice is kept for
+next time, and changing it rewrites the draft on screen. The text of that
+email (without the earlier mail quoted under it) and up to five earlier
+messages of the thread, each cut short, go to the model, and the draft shows
+in the panel to edit. **Insert into Gmail** puts it at the
 top of Gmail's reply box; you read it and press Send yourself. InboxIQ never
 sends or saves mail.
 
