@@ -590,3 +590,16 @@ body {
   background: color-mix(in srgb, var(--iq-indigo) 14%, transparent);
   font-weight: 600;
 }
+
+/* Needs reply: the waiting emails, listed under the item while it is picked. */
+.iq-needs { display: flex; flex-direction: column; gap: 2px; padding: 2px 0 8px 24px; }
+.iq-needs > .iq-note { padding-left: 10px; padding-right: 0; }
+.iq-needs > .iq-link { align-self: flex-start; margin: 2px 0 0 10px; padding: 0; font-size: 12px; }
+.iq-need + .iq-need { border-top: 1px solid var(--iq-separator); }
+.iq-need .iq-msg { padding: 6px 10px 2px; }
+.iq-need-draft { margin: 0 0 6px 10px; padding: 0; font-size: 12px; }
+
+.iq-needs-inline { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 2px 10px 8px 44px; }
+.iq-needs-inline .iq-hint, .iq-needs-inline .iq-note { padding: 0; margin: 0; font-size: 11px; }
+.iq-needs-inline .iq-link { font-size: 12px; }
+.iq-reply > .iq-reason { margin: 0 0 6px; }

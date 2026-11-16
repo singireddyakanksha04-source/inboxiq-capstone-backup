@@ -90,6 +90,9 @@
           function () { handlers.onPick(null); })
       );
     }
+    list.appendChild(navItem(NEEDS_META, state.needs_count || 0, isOn(state, InboxIQ.NEEDS_KEY),
+      function () { handlers.onPick(InboxIQ.NEEDS_KEY); }));
+    if (isOn(state, InboxIQ.NEEDS_KEY)) list.appendChild(needsInline(state, handlers));
     function add(pair) {
       var meta = InboxIQ.categoryMeta(pair[0]);
       list.appendChild(navItem(meta, pair[1], isOn(state, pair[0]), function () { handlers.onPick(pair[0]); }));
@@ -104,6 +107,83 @@
     frag.appendChild(list);
     frag.appendChild(customSection(state, handlers));
     return frag;
+  }
+
+  // --- needs reply -------------------------------------------------------------
+  //
+  // The emails waiting on the person's answer, each with the model's reason.
+  // Draft reply opens the email and starts a draft in the reply card.
+
+  InboxIQ.NEEDS_KEY = "needs";
+  var NEEDS_META = { label: "Needs reply", tone: "blue", icon: "reply", urgent: true };
+
+  function needsList(state, handlers) {
+    var wrap = el("div", "iq-needs");
+    if (!state.ai_ready) {
+      wrap.appendChild(el("div", "iq-note", "Add your Groq key to find emails that need a reply."));
+      wrap.appendChild(actionLink("Add AI key", function () { handlers.onForm("key"); }));
+      return wrap;
+    }
+    if (state.checking) wrap.appendChild(aiBanner(state, "AI is finding emails that need a reply"));
+    if (state.needs_note) wrap.appendChild(el("div", "iq-note iq-error", state.needs_note));
+    var rows = InboxIQ.viewRows(state, InboxIQ.NEEDS_KEY);
+    if (!rows.length && !state.checking) {
+      wrap.appendChild(el("div", "iq-note", state.needs_checked
+        ? "Nothing is waiting on your answer."
+        : "Not checked yet."));
+    }
+    rows.forEach(function (m) {
+      var row = el("div", "iq-need");
+      var open = el("button", "iq-msg");
+      open.type = "button";
+      var from = el("div", "iq-from");
+      from.appendChild(paint(el("span", "iq-from-name", m.from_name || "Unknown sender"), ink()));
+      from.appendChild(el("span", "iq-date", shortDate(m.date)));
+      open.appendChild(from);
+      open.appendChild(paint(el("div", "iq-subject", m.subject || "(no subject)"), ink()));
+      if (m.needs_reason) open.appendChild(reasonChip(m.needs_reason));
+      open.addEventListener("click", function () { handlers.onOpen(m); });
+      row.appendChild(open);
+      var draft = el("button", "iq-link iq-with-icon iq-need-draft");
+      draft.type = "button";
+      draft.appendChild(InboxIQ.icon("sparkle", 11, 2.4));
+      draft.appendChild(el("span", null, "Draft reply"));
+      draft.setAttribute("aria-label", "Draft a reply to " + (m.from_name || "this email"));
+      draft.addEventListener("click", function () { handlers.onDraftFor(m); });
+      row.appendChild(draft);
+      wrap.appendChild(row);
+    });
+    if (!state.checking) {
+      var again = actionLink(state.needs_checked ? "Check again" : "Check with AI", handlers.onNeedsCheck);
+      again.disabled = Boolean(state.busy);
+      wrap.appendChild(again);
+    }
+    return wrap;
+  }
+
+  // In Gmail the waiting emails show in Gmail's own mail list on the right;
+  // under the item sit only what that list cannot show: progress, errors and
+  // Check again.
+  function needsInline(state, handlers) {
+    var wrap = el("div", "iq-needs-inline");
+    if (!state.ai_ready) {
+      wrap.appendChild(el("div", "iq-hint", "Add your Groq key to find emails that need a reply."));
+      wrap.appendChild(actionLink("Add AI key", function () { handlers.onForm("key"); }));
+      return wrap;
+    }
+    if (state.checking) {
+      wrap.appendChild(aiBanner(state, "AI is finding emails that need a reply"));
+      return wrap;
+    }
+    if (state.needs_note) wrap.appendChild(el("div", "iq-note iq-error", state.needs_note));
+    var count = InboxIQ.viewRows(state, InboxIQ.NEEDS_KEY).length;
+    wrap.appendChild(el("div", "iq-hint", !state.needs_checked ? "Not checked yet."
+      : count ? "Showing them in Gmail on the right. Open one to draft a reply."
+        : "Nothing is waiting on your answer."));
+    var again = actionLink(state.needs_checked ? "Check again" : "Check with AI", handlers.onNeedsCheck);
+    again.disabled = Boolean(state.busy);
+    wrap.appendChild(again);
+    return wrap;
   }
 
   // --- collapsible groups ----------------------------------------------------
@@ -528,6 +608,7 @@
   InboxIQ.viewRows = function (state, key) {
     var view = arguments.length > 1 ? key : state.view;
     if (view === undefined) return [];
+    if (view === InboxIQ.NEEDS_KEY) return (state.messages || []).filter(function (m) { return m.needs_reply; });
     var where = parseSubView(view);
     var own = findCustom(state, view);
     if (!where && !own && typeof view === "string" && view.indexOf(InboxIQ.CUSTOM_PREFIX) === 0) return [];
@@ -577,6 +658,16 @@
     var where = parseSubView(state.view);
     if (where) return subPage(state, handlers, where);
     var frag = document.createDocumentFragment();
+    if (state.view === InboxIQ.NEEDS_KEY) {
+      var up = el("button", "iq-back");
+      up.type = "button";
+      up.appendChild(InboxIQ.icon("back", 14, 2));
+      up.appendChild(el("span", null, NEEDS_META.label));
+      up.addEventListener("click", function () { handlers.onPick(undefined); });
+      frag.appendChild(up);
+      frag.appendChild(needsList(state, handlers));
+      return frag;
+    }
     var category = state.view;
     var own = findCustom(state, category);
     var meta = own ? customMeta(own)
@@ -707,6 +798,9 @@
       var matched = state.custom.reduce(function (n, c) { return n + c.count; }, 0);
       state.ai_note = reply.ai_error || ("AI put " + matched + " messages in your categories.");
     }
+    state.needs_count = reply.needs_count || 0;
+    state.needs_checked = Boolean(reply.needs_checked);
+    if (reply.needs_error !== undefined) state.needs_note = reply.needs_error || "";
     state.subs = reply.subs || {};
     state.split_min = reply.split_min || 6;
     if (state.view && String(state.view).indexOf(InboxIQ.CUSTOM_PREFIX) === 0 && !findCustom(state, state.view)) {
@@ -759,10 +853,14 @@
         send({ type: "ai:key", key: key }, function (reply) {
           state.form = null;
           if (reply.ai_ready && (reply.custom || []).length) send({ type: "custom:sort" });
+          else if (reply.ai_ready) send({ type: "needs:check" });
           else render();
         });
       },
       onSort: function () { send({ type: "custom:sort" }); },
+      // Read the inbox again first, so mail that came in since the last sort
+      // is checked too; the scan then sorts and runs Needs reply itself.
+      onNeedsCheck: function () { send({ type: "scan" }); },
       onSplit: function (parent, label, description) {
         if (!state.ai_ready) {
           // The key form lives on the mailbox list.
@@ -842,7 +940,7 @@
       chrome.storage.onChanged.addListener(function (changes, area) {
         if (area !== "local" || !changes.inboxiq_ai_progress) return;
         state.ai_progress = changes.inboxiq_ai_progress.newValue || null;
-        if (state.sorting || state.splitting) render();
+        if (state.sorting || state.splitting || state.checking) render();
       });
     } catch (err) {
       // No extension storage (a plain page preview): the bar stays indeterminate.
@@ -858,6 +956,11 @@
     var reply = state.reply;
     var card = el("section", "iq-reply");
     card.setAttribute("aria-label", "Reply draft");
+    // Opened from Needs reply: say what the email is waiting for.
+    var waiting = (state.messages || []).filter(function (m) {
+      return m.needs_reply && m.thread_id === state.openThread;
+    })[0];
+    if (waiting && waiting.needs_reason) card.appendChild(reasonChip(waiting.needs_reason));
     if (!reply) {
       card.appendChild(noteField(state, handlers));
       card.appendChild(styleRow(state, handlers));

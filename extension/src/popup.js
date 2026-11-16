@@ -38,6 +38,9 @@
     },
   };
 
+  // The reply card lives in Gmail; the popup opens the email there.
+  handlers.onDraftFor = handlers.onOpen;
+
   var custom = InboxIQ.customHandlers(state, send, render);
   Object.keys(custom).forEach(function (name) { handlers[name] = custom[name]; });
 
@@ -54,11 +57,16 @@
       state.splitting = message.parent;
       state.ai_progress = null;
     }
+    if (message.type === "needs:check") {
+      state.checking = true;
+      state.ai_progress = null;
+    }
     render();
     chrome.runtime.sendMessage(message, function (reply) {
       state.busy = false;
       if (message.type === "custom:sort") state.sorting = false;
       if (message.type === "sub:split") state.splitting = null;
+      if (message.type === "needs:check") state.checking = false;
       if (chrome.runtime.lastError) state.error = chrome.runtime.lastError.message;
       else if (reply && reply.error) {
         console.warn("[InboxIQ]", message.type, "failed:", reply.error);
@@ -73,9 +81,12 @@
       else if (reply) {
         apply(reply);
         if (then) return then(reply);
-        // A fresh scan brings new mail: sort it into the person's categories.
-        if ((message.type === "scan" || message.type === "connect") &&
-            reply.ai_ready && (reply.custom || []).length) return send({ type: "custom:sort" });
+        // A fresh scan brings new mail: sort it into the person's categories,
+        // then find what in it is waiting on a reply.
+        if ((message.type === "scan" || message.type === "connect") && reply.ai_ready) {
+          return send({ type: (reply.custom || []).length ? "custom:sort" : "needs:check" });
+        }
+        if (message.type === "custom:sort" && reply.ai_ready) return send({ type: "needs:check" });
       }
       render();
     });

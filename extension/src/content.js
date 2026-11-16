@@ -28,6 +28,9 @@
     listInGmail: true,   // a picked mailbox shows in Gmail's own list on the right
     selected: undefined, // that mailbox (undefined = none, null = all sorted mail)
     openThread: null,    // Gmail thread id of the email open on the right
+    autoDraft: null,     // thread to draft for as soon as Gmail opens it (Needs reply)
+    checking: false,     // the reply check is running
+    needs_count: 0,
     reply: null,         // { loading } | { error } | { text, to, needs_reply, note } for that email
     replyNote: "",       // the person's optional "what to say" for that email
     replyStyle: { tone: "friendly", length: "short" }, // kept across emails and visits
@@ -45,6 +48,11 @@
       render();
     },
     onOpen: function (message) { openThread(message); },
+    // Open the email, and start a draft once Gmail shows it.
+    onDraftFor: function (message) {
+      state.autoDraft = message.thread_id;
+      openThread(message);
+    },
     onDraft: function () {
       if (!state.ai_ready) {
         state.form = "key"; // the key form sits under My categories
@@ -123,11 +131,16 @@
       state.splitting = message.parent;
       state.ai_progress = null;
     }
+    if (message.type === "needs:check") {
+      state.checking = true;
+      state.ai_progress = null;
+    }
     render();
     chrome.runtime.sendMessage(message, function (reply) {
       state.busy = false;
       if (message.type === "custom:sort") state.sorting = false;
       if (message.type === "sub:split") state.splitting = null;
+      if (message.type === "needs:check") state.checking = false;
       if (chrome.runtime.lastError) {
         state.error = chrome.runtime.lastError.message;
       } else if (reply && reply.error) {
@@ -142,9 +155,12 @@
       } else if (reply) {
         apply(reply);
         if (then) return then(reply);
-        // A fresh scan brings new mail: sort it into the person's categories.
-        if ((message.type === "scan" || message.type === "connect") &&
-            reply.ai_ready && (reply.custom || []).length) return send({ type: "custom:sort" });
+        // A fresh scan brings new mail: sort it into the person's categories,
+        // then find what in it is waiting on a reply.
+        if ((message.type === "scan" || message.type === "connect") && reply.ai_ready) {
+          return send({ type: (reply.custom || []).length ? "custom:sort" : "needs:check" });
+        }
+        if (message.type === "custom:sort" && reply.ai_ready) return send({ type: "needs:check" });
       }
       render();
     });
@@ -193,6 +209,11 @@
     state.openThread = id;
     state.reply = null; // a draft belongs to the email it was written for
     state.replyNote = "";
+    if (id && id === state.autoDraft) {
+      state.autoDraft = null;
+      handlers.onDraft();
+      return;
+    }
     render();
   }
 
@@ -291,6 +312,7 @@
     if (!panel) return;
     applyTheme();
     InboxIQ.renderPanel(panel, state, handlers);
+    scheduleTags(); // the waiting emails may have changed
     position(); // the panel just changed height
     InboxIQ.fitPanel(panel, state, function () { InboxIQ.renderPanel(panel, state, handlers); });
     showInGmail();
@@ -461,7 +483,90 @@
     }, 300);
   }
 
-  new MutationObserver(scheduleMount).observe(document.body, {
+  // --- Needs reply tags in Gmail's own mail list ---------------------------------
+  //
+  // Each row of Gmail's list that is waiting on the person's answer gets a
+  // small "Needs reply" tag before its subject; hovering shows the
+  // reason, clicking it opens the email and starts a draft. Gmail's list stays
+  // Gmail's: nothing else in the row changes.
+  var TAG = "iq-needs-tag";
+
+  // A list row names its thread as data-legacy-thread-id (the API's hex id),
+  // or as data-thread-id "#thread-f:<decimal>"; both are read.
+  function rowThread(row) {
+    var legacy = row.querySelector("[data-legacy-thread-id]");
+    if (legacy) return legacy.getAttribute("data-legacy-thread-id");
+    var named = row.querySelector("[data-thread-id]");
+    var match = named && /thread-f:(\d+)/.exec(named.getAttribute("data-thread-id"));
+    if (!match) return null;
+    try { return BigInt(match[1]).toString(16); } catch (err) { return null; }
+  }
+
+  function makeTag(message) {
+    var tag = document.createElement("span");
+    tag.className = TAG;
+    tag.setAttribute("role", "button");
+    tag.setAttribute("tabindex", "0");
+    tag.title = (message.needs_reason ? message.needs_reason + ". " : "") + "Click to draft a reply.";
+    tag.setAttribute("aria-label", "Needs reply: " + (message.needs_reason || "") + ". Draft a reply");
+    tag.textContent = "\u21A9 Needs reply";
+    var dark = pageIsDark();
+    var rules = {
+      display: "inline-block", margin: "0 8px 0 0", padding: "0 8px", "border-radius": "10px",
+      "font-size": "12px", "font-weight": "500", "line-height": "18px", "vertical-align": "baseline",
+      background: dark ? "rgba(138,180,248,0.24)" : "#e8eefc", color: dark ? "#c5d7fb" : "#0b57d0",
+      "-webkit-text-fill-color": dark ? "#c5d7fb" : "#0b57d0", cursor: "pointer", "white-space": "nowrap",
+    };
+    Object.keys(rules).forEach(function (k) { tag.style.setProperty(k, rules[k], "important"); });
+    var go = function (e) {
+      e.preventDefault();
+      e.stopPropagation(); // Gmail would open the row on its own as well
+      handlers.onDraftFor(message);
+    };
+    tag.addEventListener("click", go, true);
+    tag.addEventListener("mousedown", function (e) { e.stopPropagation(); }, true);
+    tag.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") go(e); });
+    return tag;
+  }
+
+  function tagRows() {
+    var waiting = {};
+    (state.connected ? state.messages || [] : []).forEach(function (m) {
+      if (m.needs_reply && m.thread_id) waiting[m.thread_id] = m;
+    });
+    var rows = document.querySelectorAll('tr[role="row"], tr.zA');
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      var thread = rowThread(row);
+      var message = thread ? waiting[thread] : null;
+      var old = row.querySelector("." + TAG);
+      if (old && (!message || old.getAttribute("data-thread") !== thread)) { old.remove(); old = null; }
+      if (!message || old) continue;
+      // Before the subject: the element carrying the thread id sits in it.
+      var anchor = row.querySelector("[data-legacy-thread-id], [data-thread-id]");
+      if (!anchor || !anchor.parentNode) continue;
+      var tag = makeTag(message);
+      tag.setAttribute("data-thread", thread);
+      anchor.parentNode.insertBefore(tag, anchor);
+    }
+  }
+
+  var tagging = null;
+  function scheduleTags() {
+    if (tagging) return;
+    tagging = setTimeout(function () { tagging = null; tagRows(); }, 250);
+  }
+
+  new MutationObserver(function (records) {
+    // Our own tags going in must not set off another round.
+    var ours = records.every(function (r) {
+      return Array.prototype.every.call(r.addedNodes, function (n) { return n.className === TAG; }) &&
+        Array.prototype.every.call(r.removedNodes, function (n) { return n.className === TAG; });
+    });
+    if (ours) return;
+    scheduleMount();
+    scheduleTags();
+  }).observe(document.body, {
     childList: true,
     subtree: true,
   });
@@ -488,6 +593,8 @@
       var messages = reply.messages || [];
       if (reply.connected && messages.length && !messages.some(function (m) { return m.rfc822_id; })) {
         send({ type: "scan" });
+      } else if (reply.connected && reply.ai_ready && !reply.needs_checked) {
+        send({ type: "needs:check" }); // first visit since Needs reply arrived
       }
     }
   });

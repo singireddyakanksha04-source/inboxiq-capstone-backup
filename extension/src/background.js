@@ -8,7 +8,9 @@
 // have added categories and their own Groq key, sender, subject and preview
 // of the newest messages go to the model to be sorted into them. A reply
 // draft (reply.js) sends the text of the one email the person asked about.
-importScripts("./classifier.js", "./personal.js", "./reply.js");
+// Needs reply (needs.js) sends sender, subject and preview of the newest
+// messages the rules could not rule out, when a Groq key is saved.
+importScripts("./classifier.js", "./personal.js", "./reply.js", "./needs.js");
 // The developer's own Groq key, copied from .env by scripts/load_key.mjs.
 // Git-ignored, so a fresh checkout has no such file and falls back to a key
 // saved from the panel.
@@ -217,8 +219,21 @@ async function decorate(result) {
       other: members - placed,
     };
   });
+  var needs = await needsStore();
+  var seenThreads = {};
+  var needsCount = 0;
+  // Newest first, so a thread with several waiting emails is listed once.
+  messages.forEach(function (m) {
+    var r = needs.results[m.id];
+    var waiting = Boolean(r && r.needs && !needs.answered[m.thread_id] && !seenThreads[m.thread_id]);
+    if (waiting) { seenThreads[m.thread_id] = true; needsCount += 1; }
+    m.needs_reply = waiting;
+    m.needs_reason = waiting ? r.reason : null;
+  });
   return Object.assign({}, result, {
     messages: messages,
+    needs_count: needsCount,
+    needs_checked: Object.keys(needs.results).length > 0,
     custom: custom.categories.map(function (c) {
       return Object.assign({}, c, { count: counts[c.id] || 0 });
     }),
@@ -391,6 +406,85 @@ async function aiSort() {
   return result;
 }
 
+// --- needs reply ---------------------------------------------------------------
+//
+// inboxiq_needs: { results: { <message id>: { needs, reason } },
+//                  answered: { <thread id>: true } }
+// A message is asked about once; whether its thread is answered is checked
+// again on every run, because the person may have replied since.
+
+async function needsStore() {
+  var stored = await chrome.storage.local.get("inboxiq_needs");
+  var needs = stored.inboxiq_needs || {};
+  return { results: needs.results || {}, answered: needs.answered || {} };
+}
+
+async function checkNeeds() {
+  var saved = await cached();
+  if (!saved) return SIGNED_OUT;
+  var key = await aiKey();
+  if (!key) {
+    var none = await decorate(saved);
+    none.needs_error = "Add your Groq key to find emails that need a reply.";
+    return none;
+  }
+  var me = String(saved.email || "").toLowerCase();
+  var needs = await needsStore();
+  var newest = saved.messages.slice(0, InboxIQ.NEEDS_LIMIT);
+  // Rules first: what can never need a reply is settled without the model.
+  var results = {};
+  var pending = [];
+  newest.forEach(function (m) {
+    if (!InboxIQ.needsCandidate(m, me)) results[m.id] = { needs: false, reason: "" };
+    else if (needs.results[m.id]) results[m.id] = needs.results[m.id];
+    else pending.push(m);
+  });
+  var error = null;
+  try {
+    await chrome.storage.local.set({ inboxiq_ai_progress: { done: 0, total: pending.length } });
+    for (var i = 0; i < pending.length; i += InboxIQ.NEEDS_BATCH) {
+      var batch = pending.slice(i, i + InboxIQ.NEEDS_BATCH);
+      var answers;
+      try {
+        answers = await InboxIQ.needsBatch(key, batch);
+      } catch (err) {
+        error = err.message;
+        break;
+      }
+      batch.forEach(function (m, j) { results[m.id] = answers[j]; });
+      await chrome.storage.local.set({
+        inboxiq_ai_progress: { done: Math.min(i + batch.length, pending.length), total: pending.length },
+      });
+    }
+    // Answered or not: read who wrote last in each waiting thread (headers only).
+    var answered = {};
+    var waiting = newest.filter(function (m) { return results[m.id] && results[m.id].needs; });
+    var threads = waiting.map(function (m) { return m.thread_id; })
+      .filter(function (id, n, all) { return id && all.indexOf(id) === n; });
+    var token = threads.length ? await getToken(false).catch(function () { return null; }) : null;
+    if (!token) answered = needs.answered;  // signed out for now: keep what was known
+    else {
+      for (var t = 0; t < threads.length; t += BATCH) {
+        await Promise.all(threads.slice(t, t + BATCH).map(function (id) {
+          return gmail(token, "/threads/" + id + "?format=metadata&metadataHeaders=From").then(function (thread) {
+            // An unsent draft in the thread is not an answer.
+            var senders = (thread.messages || []).filter(function (m) {
+              return (m.labelIds || []).indexOf("DRAFT") === -1;
+            }).map(function (m) { return header(m.payload, "from"); });
+            if (InboxIQ.threadAnswered(senders, me)) answered[id] = true;
+          }, function () { /* unreadable thread: keep it listed */ });
+        }));
+      }
+    }
+    await chrome.storage.local.set({ inboxiq_needs: { results: results, answered: answered } });
+  } finally {
+    await chrome.storage.local.set({ inboxiq_ai_progress: null });
+  }
+  var view = await decorate(saved);
+  view.needs_error = error;
+  return view;
+}
+
 // --- reply drafts ------------------------------------------------------------
 //
 // The thread open in Gmail is read in full (read-only, like the scan) and the
@@ -470,6 +564,9 @@ async function handle(message) {
   }
   if (message.type === "custom:sort") {
     return aiSort();
+  }
+  if (message.type === "needs:check") {
+    return checkNeeds();
   }
   if (message.type === "sub:split") {
     await splitCategory(message.parent, message.label, message.description);
