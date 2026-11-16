@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query
 
 from app.services import firestore_client as fs
-from app.services import reply_ai
+from app.services import needs_ai, reply_ai
 from app.services.personal_ai import AIUnavailable
 
 router = APIRouter(prefix="/api/reply", tags=["reply"])
@@ -42,3 +42,19 @@ def draft(
         return {"draft": None, "error": str(e)}
     return {"draft": {"email_id": email_id, "to": email.get("sender_email") or "",
                       "subject": email.get("subject") or "", **result}, "error": None}
+
+
+@router.get("/needs")
+def needs(uid: Uid):
+    """The stored emails waiting on the user's answer, newest first, with the
+    model's reason. Read only: nothing is stored or sent. A model failure is
+    reported in `error`."""
+    me = str((fs.get_user(uid) or {}).get("email") or "").lower()
+    emails = fs.list_emails(uid, limit=needs_ai.LIMIT)
+    try:
+        found = needs_ai.needs_reply(emails, me, lambda thread_id: fs.thread_emails(uid, thread_id))
+    except AIUnavailable as e:
+        return {"items": [], "error": str(e)}
+    return {"items": [{"email_id": e.get("id"), "thread_id": e.get("thread_id"), "sender": e.get("sender") or "",
+                       "subject": e.get("subject") or "", "date": e.get("date"), "reason": e["needs_reason"]}
+                      for e in found], "error": None}
