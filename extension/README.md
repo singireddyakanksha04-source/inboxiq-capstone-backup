@@ -59,6 +59,20 @@ in the panel to edit. **Insert into Gmail** puts it at the
 top of Gmail's reply box; you read it and press Send yourself. InboxIQ never
 sends or saves mail.
 
+### Needs reply
+
+Emails waiting on your answer get a small **Needs reply** tag before their
+subject in Gmail's own mail list; hover it for the reason, click it to open
+the email and start a draft. **Needs reply** at the top of the panel shows
+only those emails in Gmail's list. Open one and the reply card
+says what it is waiting for ("Priya asks if Thursday at 3 works"), with
+a draft action under it. Rules settle most mail first:
+bills, codes, receipts, newsletters, promotions and no-reply senders are never
+sent to the model. The rest of the newest 50 messages go with sender, subject
+and preview only. A thread whose newest message is yours (an unsent draft
+does not count) leaves the list. It runs after each sort, and **Check again**
+runs it by hand.
+
 ## Layout
 
 | File | What it does |
@@ -67,6 +81,7 @@ sends or saves mail.
 | `src/classifier.js` | The rule classifier, ported from the backend |
 | `src/personal.js` | Your own categories: the AI prompt, batching and answer checks |
 | `src/reply.js` | Reply drafts: the prompt, reading the email's text, cleaning the draft |
+| `src/needs.js` | Needs reply: the rules, the prompt and the answered-thread check |
 | `src/background.js` | Gmail sign-in, message fetching, sorting, caching |
 | `src/content.js` | Mounts the panel in Gmail's navigation and holds view state |
 | `src/panel.js` | Draws the mailbox list and the per-mailbox message list |
@@ -81,6 +96,7 @@ node extension/tests/background_scan.test.mjs     # scan, sort, count, token los
 node extension/tests/personal_categories.test.mjs # own categories, AI sorting, failures
 node extension/tests/subcategories.test.mjs      # split a category, rename, delete, failures
 node extension/tests/reply_drafts.test.mjs       # reply drafts, email text, failures, read-only
+node extension/tests/needs_reply.test.mjs        # needs reply: rules, answered threads, failures
 ```
 
 ## Limits
